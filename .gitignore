@@ -1,3 +1,6 @@
-algoNotebook.ipynb
-SmoothNumbersPlan.pdf
-smoothNumbers/
+texts/
+.venv/
+__pycache__/
+.vscode/
+build/
+_core.cpython-313-darwin.so
