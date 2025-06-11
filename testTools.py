@@ -3,22 +3,14 @@ import time
 from statistics import mean
 import numpy as np
 from math import isqrt
-
-def sieveTo(n):
-    primality = [False,False]+[True for c in range(n-1)]
-    for i in range(2, isqrt(n)+1):
-        if not primality[i]:
-            continue
-        for j in range(i*i, n + 1, i):
-            primality[j] = False
-    return [p for p in range(len(primality)) if primality[p]]
+from smooth import sieve_to
 
 def primality_complexity(func, N, data=None):
     if data:
         test_primes = data
     else:
         print(f"Beginning sieveTo({N})...")
-        test_primes = sieveTo(N)
+        test_primes = sieve_to(N)
         print(f"Found {len(test_primes)} primes.")
 
     times = []

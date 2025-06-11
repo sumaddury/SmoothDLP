@@ -1,5 +1,5 @@
 # smooth/__init__.py
 
-from ._core import add, say_hello, sieve_to, is_prime
+from ._core import sieve_to, is_prime, factorize
 
-__all__ = ["add", "say_hello", "sieve_to", "is_prime"]
+__all__ = ["sieve_to", "is_prime", "factorize"]
