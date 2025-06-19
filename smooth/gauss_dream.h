@@ -4,6 +4,8 @@
 #include <utility>
 #include <gmpxx.h>
 
+extern std::vector<uint32_t> full_primes_array;
+
 std::vector<mpz_class> sieveTo(const mpz_class &n_mp);
 
 bool isPrime(const mpz_class &n_mp);

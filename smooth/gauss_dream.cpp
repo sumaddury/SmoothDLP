@@ -17,6 +17,7 @@
 
 static std::vector<uint32_t> small_primes_array;
 static std::unordered_set<uint32_t> small_primes_set;
+std::vector<uint32_t> full_primes_array;
 static constexpr uint32_t MAX_SMALL_PRIME = 1'000'000;
 static const mpz_class MAX_NAIVE("1000000000000");
 static constexpr std::array<uint32_t, 32> M = {{
@@ -27,20 +28,41 @@ static constexpr std::array<uint32_t, 32> M = {{
 }};
 
 struct SmallPrimesLoader {
-  SmallPrimesLoader() {
-    const char* src   = __FILE__;
-    const char* slash = std::strrchr(src, '/');
-    std::string dir   = slash ? std::string(src, slash - src) : ".";
+    SmallPrimesLoader() {
+        const char* src   = __FILE__;
+        const char* slash = std::strrchr(src, '/');
+        std::string dir   = slash ? std::string(src, slash - src) : ".";
 
-    std::ifstream in(dir + "/small_primes.bin", std::ios::binary);
-    uint32_t p;
-    while (in.read(reinterpret_cast<char*>(&p), sizeof(p))) {
-      small_primes_array.push_back(p);
+        std::ifstream in(dir + "/primes_deltas.bin", std::ios::binary);
+        if (!in) throw std::runtime_error("cannot open primes_deltas.bin");
+        in.seekg(0, std::ios::end);
+        std::streamsize N = in.tellg();
+        in.seekg(0, std::ios::beg);
+
+        std::vector<uint8_t> deltas;
+        deltas.resize(size_t(N));
+        if (!in.read(reinterpret_cast<char*>(deltas.data()), N))
+            throw std::runtime_error("error reading primes_deltas.bin");
+
+        full_primes_array.reserve(deltas.size());
+        uint32_t p = 0;
+        for (size_t i = 0; i < deltas.size(); ++i) {
+            p = (i == 0 ? deltas[0] : p + deltas[i]);
+            full_primes_array.push_back(p);
+        }
+
+        auto it = std::upper_bound(
+            full_primes_array.begin(),
+            full_primes_array.end(),
+            MAX_SMALL_PRIME
+        );
+        small_primes_array.assign(full_primes_array.begin(), it);
+        small_primes_set.insert(
+            small_primes_array.begin(),
+            small_primes_array.end()
+        );
     }
-    small_primes_set.insert(
-      small_primes_array.begin(), small_primes_array.end());
-  }
-} _loader;
+} _small_primes_loader;
 
 std::vector<mpz_class> sieveTo(const mpz_class &n_mp) {
     if (n_mp > std::numeric_limits<size_t>::max()) {

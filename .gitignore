@@ -4,3 +4,4 @@ __pycache__/
 .vscode/
 build/
 _core.cpython-313-darwin.so
+.DS_Store
