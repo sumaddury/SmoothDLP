@@ -49,4 +49,35 @@ PYBIND11_MODULE(_core, m) {
         mpz_class x_mp(s);
         return isSmooth(x_mp, y);
     }, py::arg("x"), py::arg("y"), "Return true if integer n is y-smooth (all prime factors ≤ y).");
+
+    m.def("log_mul", [](py::object x_obj, double log_rho) {
+        std::string xs = py::str(x_obj);
+        mpz_class x_mp(xs);
+
+        mpz_class result = log_mul(x_mp, log_rho);
+
+        return py::int_(py::str(result.get_str()));
+    }, py::arg("x"), py::arg("log_rho"), "Approximate floor(x * exp(log_rho)) with ≤0.1% relative error\n\n");
+
+    m.def("log_dickman", [](double u) {
+        return logDickman(u);
+    },
+    py::arg("u"), "Compute the natural logarithm of the Dickman-ρ function at u.\n\n");
+
+    m.def("mp_ln", [](py::object o) {
+        std::string xs = py::str(o);
+        mpz_class x_mp(xs);
+        double result = mp_ln(x_mp);
+        return result;
+    },
+    py::arg("x"), "Compute ln(x) for a large Python int x with full double precision.\n\n");
+
+    m.def("psi_approx", [](py::object o, uint64_t y) {
+        std::string xs = py::str(o);
+        mpz_class x_mp(xs);
+        mpz_class z = psiApprox(x_mp, y);
+        return py::int_(py::str(z.get_str()));
+    },
+    py::arg("x"), py::arg("y"),
+    "Approximate ψ(x, y) ≈ floor(x * ρ(ln(x)/ln(y))) with ≤0.1% error.\n\n");
 }

@@ -3,15 +3,9 @@ import time
 from statistics import mean
 import numpy as np
 from math import isqrt
-from smooth import sieve_to
 
-def primality_complexity(func, N, data=None):
-    if data:
-        test_primes = data
-    else:
-        print(f"Beginning sieveTo({N})...")
-        test_primes = sieve_to(N)
-        print(f"Found {len(test_primes)} primes.")
+def primality_complexity(func, N, data):
+    test_primes = data
 
     times = []
     print("Collecting times...")
