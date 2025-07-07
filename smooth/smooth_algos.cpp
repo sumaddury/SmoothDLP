@@ -17,7 +17,7 @@
 #include <utility>
 
 
-constexpr uint32_t Y_SMOOTHNESS_BOUND = 10'000'000;
+constexpr uint32_t Y_SMOOTHNESS_BOUND = 33'554'432;
 constexpr int DIGITS = 9;
 constexpr int NEWTON_TRIALS = 5;
 const double inv_ln10 = 1.0 / std::log(10.0);

@@ -1,6 +1,7 @@
 #pragma once
 #include <utility>
 #include <gmpxx.h>
+#include <cstdint>
 
 extern const uint32_t Y_SMOOTHNESS_BOUND;
 
