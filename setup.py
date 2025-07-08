@@ -14,7 +14,7 @@ BOOST_ROOT = "/opt/homebrew/opt/boost"
 
 core_module = Extension(
     name="smooth._core",
-    sources=["smooth/core.cpp", "smooth/gauss_dream.cpp", "smooth/smooth_algos.cpp"],
+    sources=["smooth/core.cpp", "smooth/gauss_dream.cpp", "smooth/smooth_algos.cpp", "smooth/dlp_infra.cpp"],
     include_dirs=[pybind_include, os.path.join(GMP_ROOT, "include"), os.path.join(BOOST_ROOT, "include")],
     library_dirs=[os.path.join(GMP_ROOT, "lib")],
     libraries=["gmpxx", "gmp"],

@@ -4,6 +4,7 @@
 #include "gauss_dream.h"
 #include "smooth_algos.h"
 #include <pybind11/stl.h>
+#include "dlp_infra.h"
 
 // python setup.py build_ext --inplace
 // python -m pip install -e . --no-build-isolation
@@ -60,4 +61,13 @@ PYBIND11_MODULE(_core, m) {
         mpz_class z = psiApprox(x_mp, y);
         return py::int_(py::str(z.get_str()));
     }, py::arg("x"), py::arg("y"), "Approximate ψ(x, y) ≈ floor(x * ρ(ln(x)/ln(y))) with ≤0.1% error.\n\n");
+
+    m.def("legendre_symbol", [](py::object o1, py::object o2) {
+        std::string as = py::str(o1);
+        std::string ps = py::str(o2);
+        mpz_class a_mp(as);
+        mpz_class p_mp(ps);
+        mpz_class ls = legendreSymbol(a_mp, p_mp);
+        return py::int_(py::str(ls.get_str()));
+    }, py::arg("a"), py::arg("p"), "Return the Legendre symbol result (a / p) for odd prime p.");
 }
