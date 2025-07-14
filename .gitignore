@@ -5,3 +5,5 @@ __pycache__/
 build/
 _core.cpython-313-darwin.so
 .DS_Store
+_core.cpython-312-darwin.so
+smooth.egg-info/

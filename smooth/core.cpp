@@ -5,6 +5,8 @@
 #include "smooth_algos.h"
 #include <pybind11/stl.h>
 #include "dlp_infra.h"
+#include <vector>
+#include <utility>
 
 // python setup.py build_ext --inplace
 // python -m pip install -e . --no-build-isolation
@@ -17,7 +19,7 @@ PYBIND11_MODULE(_core, m) {
     m.def("sieve_to", [](py::object o) {
         std::string s = py::str(o);
         mpz_class n_mp(s);
-        auto primes = sieveTo(n_mp);
+        std::vector<mpz_class> primes = sieveTo(n_mp);
         py::list out(primes.size());
         for (size_t i = 0; i < primes.size(); ++i) {
             out[i] = py::int_(py::str(primes[i].get_str()));
@@ -33,7 +35,7 @@ PYBIND11_MODULE(_core, m) {
 
     m.def("factorize", [](py::object o) {
         mpz_class n_mp{ std::string(py::str(o)) };
-        auto vec = factorize(n_mp);
+        std::vector<std::pair<mpz_class, uint32_t>> vec = factorize(n_mp);
 
         py::list out(vec.size());
         for (size_t i = 0; i < vec.size(); ++i) {
@@ -61,13 +63,4 @@ PYBIND11_MODULE(_core, m) {
         mpz_class z = psiApprox(x_mp, y);
         return py::int_(py::str(z.get_str()));
     }, py::arg("x"), py::arg("y"), "Approximate ψ(x, y) ≈ floor(x * ρ(ln(x)/ln(y))) with ≤0.1% error.\n\n");
-
-    m.def("legendre_symbol", [](py::object o1, py::object o2) {
-        std::string as = py::str(o1);
-        std::string ps = py::str(o2);
-        mpz_class a_mp(as);
-        mpz_class p_mp(ps);
-        mpz_class ls = legendreSymbol(a_mp, p_mp);
-        return py::int_(py::str(ls.get_str()));
-    }, py::arg("a"), py::arg("p"), "Return the Legendre symbol result (a / p) for odd prime p.");
 }

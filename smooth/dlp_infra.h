@@ -1,7 +1,16 @@
 #pragma once
 #include <gmpxx.h>
 #include <cstdint>
+#include <map>
+#include <vector>
 
-mpz_class randSmooth(uint32_t  y, const mpz_class& B);
+std::vector<std::vector<mpz_class>> buildProductTree(std::vector<mpz_class> level);
 
-int legendreSymbol(const mpz_class& a_mp, const mpz_class& p_mp);
+std::vector<mpz_class> batchRemainders(const vector<vector<mpz_class>>& p_levels,
+                                        const vector<mpz_class>& X);
+
+std::vector<mpz_class> smoothCandidates(const vector<vector<mpz_class>>& p_levels, const vector<mpz_class>& X);
+
+std::vector<std::pair<const mpz_class*, uint32_t>> treeFactorize(const vector<vector<mpz_class>>& p_levels, const mpz_class &d_mp)
+
+

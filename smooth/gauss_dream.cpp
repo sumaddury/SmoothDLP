@@ -16,9 +16,10 @@
 #include <bitset>
 
 std::vector<uint32_t> full_primes_array;
+static constexpr uint32_t SIEVE_BOUND = 5'000'000;
 static constexpr uint32_t MAX_SMALL_PRIME = 1'000'000;
-static std::bitset<MAX_SMALL_PRIME+1> prime_flag;
-static const mpz_class MAX_NAIVE("1000000000000");
+static std::bitset<SIEVE_BOUND+1> prime_flag;
+static const uint64_t MAX_NAIVE = 1000000000000;
 static constexpr std::array<uint32_t, 32> M = {{
     1, 3, 5, 7, 11, 13, 17, 19,
     23, 29, 31, 37, 41, 43, 47, 53,
@@ -29,26 +30,13 @@ static std::size_t CAP_END;
 
 struct SmallPrimesLoader {
     SmallPrimesLoader() {
-        const char* src   = __FILE__;
-        const char* slash = std::strrchr(src, '/');
-        std::string dir   = slash ? std::string(src, slash - src) : ".";
-
-        std::ifstream in(dir + "/primes_deltas.bin", std::ios::binary);
-        if (!in) throw std::runtime_error("cannot open primes_deltas.bin");
-        in.seekg(0, std::ios::end);
-        std::streamsize N = in.tellg();
-        in.seekg(0, std::ios::beg);
-
-        std::vector<uint8_t> deltas;
-        deltas.resize(size_t(N));
-        if (!in.read(reinterpret_cast<char*>(deltas.data()), N))
-            throw std::runtime_error("error reading primes_deltas.bin");
-
-        full_primes_array.reserve(deltas.size());
-        uint32_t p = 0;
-        for (size_t i = 0; i < deltas.size(); ++i) {
-            p = (i == 0 ? deltas[0] : p + deltas[i]);
-            full_primes_array.push_back(p);
+        {
+            mpz_class bound(MAX_SMALL_PRIME);
+            std::vector<mpz_class> mp_primes = sieveTo(bound);
+            full_primes_array.reserve(mp_primes.size());
+            for (auto &mp : mp_primes) {
+                full_primes_array.push_back(static_cast<uint32_t>(mp.get_ui()));
+            }
         }
 
         CAP_END = std::upper_bound(
@@ -56,9 +44,10 @@ struct SmallPrimesLoader {
             full_primes_array.end(),
             MAX_SMALL_PRIME
         ) - full_primes_array.begin();
+
         prime_flag.reset();
-        for (std::size_t i = 0; i < CAP_END; ++i) {
-            prime_flag.set(full_primes_array[i]);
+        for (uint32_t q : full_primes_array) {
+            prime_flag.set(q);
         }
     }
 } _small_primes_loader;
@@ -138,22 +127,22 @@ bool isPrime(const mpz_class &n_mp) {
     return true;
 }
 
-std::pair<std::vector<std::pair<mpz_class, uint32_t>>, mpz_class> factorize_naive(const mpz_class &n_mp) {
+std::pair<std::vector<std::pair<mpz_class, uint32_t>>, mpz_class> factorize_naive(const mpz_class &n_mp, uint64_t B = MAX_NAIVE, size_t K_END = CAP_END) {
     std::vector<std::pair<mpz_class, uint32_t>> output;
     output.reserve(mpz_sizeinbase(n_mp.get_mpz_t(), 2));
     using idx_t = std::vector<uint32_t>::size_type;
     idx_t start = 0, end = 0;
     mpz_class L_mp; 
     size_t    L;
-    if (n_mp <= MAX_NAIVE) {
+    if (n_mp <= B) {
         mpz_sqrt(L_mp.get_mpz_t(), n_mp.get_mpz_t());
         L   = static_cast<size_t>(L_mp.get_ui());
         end = std::upper_bound(
                   full_primes_array.begin(),
-                  full_primes_array.begin() + CAP_END,
+                  full_primes_array.begin() + K_END,
                   L) - full_primes_array.begin();
     } else {
-        end = static_cast<idx_t>(CAP_END);
+        end = static_cast<idx_t>(K_END);
     }
 
     mpz_class n = n_mp;
@@ -171,15 +160,15 @@ std::pair<std::vector<std::pair<mpz_class, uint32_t>>, mpz_class> factorize_naiv
             output.emplace_back(p, e);
             if (n == 1) return std::make_pair(output, 1);
             start = i + 1;
-            if (n <= MAX_NAIVE) {
+            if (n <= B) {
                 mpz_sqrt(L_mp.get_mpz_t(), n.get_mpz_t());
                 L = static_cast<size_t>(L_mp.get_ui());
                 end = std::upper_bound(
                           full_primes_array.begin() + start,
-                          full_primes_array.begin() + CAP_END,
+                          full_primes_array.begin() + K_END,
                           L) - full_primes_array.begin();
             } else {
-                end = static_cast<idx_t>(CAP_END);
+                end = static_cast<idx_t>(K_END);
             }
             BREAK_COND = false;
             break;
