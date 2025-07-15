@@ -7,3 +7,6 @@ _core.cpython-313-darwin.so
 .DS_Store
 _core.cpython-312-darwin.so
 smooth.egg-info/
+data_collect
+sweep_results.csv
+data_collect.cpp

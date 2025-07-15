@@ -19,7 +19,7 @@ std::vector<uint32_t> full_primes_array;
 static constexpr uint32_t SIEVE_BOUND = 5'000'000;
 static constexpr uint32_t MAX_SMALL_PRIME = 1'000'000;
 static std::bitset<SIEVE_BOUND+1> prime_flag;
-static const uint64_t MAX_NAIVE = 1000000000000;
+static const mpz_class MAX_NAIVE = mpz_class("1000000000000");
 static constexpr std::array<uint32_t, 32> M = {{
     1, 3, 5, 7, 11, 13, 17, 19,
     23, 29, 31, 37, 41, 43, 47, 53,
@@ -127,22 +127,22 @@ bool isPrime(const mpz_class &n_mp) {
     return true;
 }
 
-std::pair<std::vector<std::pair<mpz_class, uint32_t>>, mpz_class> factorize_naive(const mpz_class &n_mp, uint64_t B = MAX_NAIVE, size_t K_END = CAP_END) {
+std::pair<std::vector<std::pair<mpz_class, uint32_t>>, mpz_class> factorize_naive(const mpz_class &n_mp) {
     std::vector<std::pair<mpz_class, uint32_t>> output;
     output.reserve(mpz_sizeinbase(n_mp.get_mpz_t(), 2));
     using idx_t = std::vector<uint32_t>::size_type;
     idx_t start = 0, end = 0;
     mpz_class L_mp; 
     size_t    L;
-    if (n_mp <= B) {
+    if (n_mp <= MAX_NAIVE) {
         mpz_sqrt(L_mp.get_mpz_t(), n_mp.get_mpz_t());
         L   = static_cast<size_t>(L_mp.get_ui());
         end = std::upper_bound(
                   full_primes_array.begin(),
-                  full_primes_array.begin() + K_END,
+                  full_primes_array.begin() + CAP_END,
                   L) - full_primes_array.begin();
     } else {
-        end = static_cast<idx_t>(K_END);
+        end = static_cast<idx_t>(CAP_END);
     }
 
     mpz_class n = n_mp;
@@ -160,15 +160,15 @@ std::pair<std::vector<std::pair<mpz_class, uint32_t>>, mpz_class> factorize_naiv
             output.emplace_back(p, e);
             if (n == 1) return std::make_pair(output, 1);
             start = i + 1;
-            if (n <= B) {
+            if (n <= MAX_NAIVE) {
                 mpz_sqrt(L_mp.get_mpz_t(), n.get_mpz_t());
                 L = static_cast<size_t>(L_mp.get_ui());
                 end = std::upper_bound(
                           full_primes_array.begin() + start,
-                          full_primes_array.begin() + K_END,
+                          full_primes_array.begin() + CAP_END,
                           L) - full_primes_array.begin();
             } else {
-                end = static_cast<idx_t>(K_END);
+                end = static_cast<idx_t>(CAP_END);
             }
             BREAK_COND = false;
             break;

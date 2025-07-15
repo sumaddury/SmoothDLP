@@ -46,8 +46,8 @@ std::vector<std::vector<mpz_class>> buildProductTree(std::vector<mpz_class> leve
     return levels;
 }
 
-std::vector<mpz_class> batchRemainders(const vector<vector<mpz_class>>& p_levels,
-                                        const vector<mpz_class>& X) {
+std::vector<mpz_class> batchRemainders(const std::vector<std::vector<mpz_class>>& p_levels,
+                                        const std::vector<mpz_class>& X) {
     const mpz_class &Z = p_levels.back()[0];
     auto x_levels = buildProductTree(X);
     size_t h = x_levels.size() - 1;
@@ -75,7 +75,7 @@ std::vector<mpz_class> batchRemainders(const vector<vector<mpz_class>>& p_levels
     return rems;
 }
 
-std::vector<mpz_class> smoothCandidates(const vector<vector<mpz_class>>& p_levels, const vector<mpz_class>& X) {
+std::vector<mpz_class> smoothCandidates(const std::vector<std::vector<mpz_class>>& p_levels, const std::vector<mpz_class>& X) {
     std::vector<mpz_class> rems = batchRemainders(p_levels, X);
     
     auto max_it = std::max_element(X.begin(), X.end());
@@ -91,7 +91,7 @@ std::vector<mpz_class> smoothCandidates(const vector<vector<mpz_class>>& p_level
     for (size_t i = 0; i < X.size(); ++i) {
         const mpz_class& x_mpz = X[i];
         const mpz_class& r = rems[i];
-        y = powm(r, M, x_mpz);
+        mpz_powm(y.get_mpz_t(), r.get_mpz_t(), M.get_mpz_t(), x_mpz.get_mpz_t());
         g = gcd(x_mpz, y);
 
         if (g == x_mpz) smooth_cands.emplace_back(x_mpz);
@@ -100,10 +100,10 @@ std::vector<mpz_class> smoothCandidates(const vector<vector<mpz_class>>& p_level
     return smooth_cands;
 }
 
-std::vector<std::pair<const mpz_class*, uint32_t>> treeFactorize(const vector<vector<mpz_class>>& p_levels, const mpz_class &d_mp) {
-    std::vector<std::pair<const mpz_class*, uint32_t>> result;
+std::vector<std::pair<size_t, uint32_t>> treeFactorize(const std::vector<std::vector<mpz_class>>& p_levels, const mpz_class &d_mp) {
+    std::vector<std::pair<size_t, uint32_t>> result;
     result.reserve(12);
-    std::vector<pair<size_t,size_t>> stack;
+    std::vector<std::pair<size_t,size_t>> stack;
     stack.reserve(p_levels.size());
     stack.emplace_back(p_levels.size()-1, 0);
 
@@ -115,16 +115,16 @@ std::vector<std::pair<const mpz_class*, uint32_t>> treeFactorize(const vector<ve
         if (d == 1) break;
         std::tie(level, idx) = stack.back();
         stack.pop_back();
-        const mpz_class* Pptr = &p_levels[level][idx];
-        g = gcd(d, *Pptr);
+        const mpz_class& P = p_levels[level][idx];
+        g = gcd(d, P);
         if (g == 1) continue;
         if (level == 0) {
             exp = 0;
             do {
                 exp++;
-                d /= *Pptr;
-            } while (d % *Pptr == 0);
-            result.emplace_back(Pptr, exp);
+                d /= P;
+            } while (d % P == 0);
+            result.emplace_back(idx, exp);
         } else {
             left = 2 * idx;
             right = left + 1;
@@ -134,3 +134,4 @@ std::vector<std::pair<const mpz_class*, uint32_t>> treeFactorize(const vector<ve
     }
     return result;
 }
+

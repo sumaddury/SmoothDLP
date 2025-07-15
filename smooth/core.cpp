@@ -12,7 +12,6 @@
 // python -m pip install -e . --no-build-isolation
 
 namespace py = pybind11;
-
 PYBIND11_MODULE(_core, m) {
     m.doc() = "Very basic core module for smooth—powered by pybind11";
 
