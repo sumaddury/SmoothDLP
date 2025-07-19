@@ -4,7 +4,8 @@
 #include "gauss_dream.h"
 #include "smooth_algos.h"
 #include <pybind11/stl.h>
-#include "dlp_infra.h"
+#include "infra.h"
+#include "bench_helpers.h"
 #include <vector>
 #include <utility>
 
@@ -62,4 +63,11 @@ PYBIND11_MODULE(_core, m) {
         mpz_class z = psiApprox(x_mp, y);
         return py::int_(py::str(z.get_str()));
     }, py::arg("x"), py::arg("y"), "Approximate ψ(x, y) ≈ floor(x * ρ(ln(x)/ln(y))) with ≤0.1% error.\n\n");
+
+    m.def("bench_solve", [](py::object o, double C, double S) {
+        std::string p_s = py::str(o);
+        mpz_class p_mp(p_s);
+        double t = benchSolve(p_mp, C, S);
+        return t;
+    }, py::arg("p"), py::arg("C"), py::arg("S"), "Benchmark CRT solve with heuristic scalars.");
 }

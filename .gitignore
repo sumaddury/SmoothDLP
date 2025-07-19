@@ -10,3 +10,4 @@ smooth.egg-info/
 data_collect
 sweep_results.csv
 data_collect.cpp
+tests/
