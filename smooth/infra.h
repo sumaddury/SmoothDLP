@@ -4,14 +4,19 @@
 #include <map>
 #include <vector>
 
+using SparseList = std::vector<std::pair<size_t, uint32_t>>;
+using RelationMatrix = std::vector<SparseList>;
+using MpzVector = std::vector<mpz_class>;
+using FactorList = std::vector<std::pair<mpz_class, uint32_t>>;
 
-std::vector<std::vector<mpz_class>> buildProductTree(std::vector<mpz_class> level);
+std::vector<MpzVector> buildProductTree(MpzVector level);
 
-std::vector<mpz_class> smoothCandidates(const std::vector<std::vector<mpz_class>>& p_levels, const std::vector<mpz_class>& X, const mpz_class& P, const mpz_class& base);
+std::vector<size_t> smoothCandidates(const std::vector<MpzVector>& p_levels, const MpzVector& X);
 
-std::vector<std::pair<size_t, uint32_t>> treeFactorize(const std::vector<std::vector<mpz_class>>& p_levels, const mpz_class &d_mp);
+SparseList treeFactorize(const std::vector<MpzVector>& p_levels, const mpz_class &d_mp);
 
-std::vector<mpz_class> crtSolve(const std::vector<std::vector<std::pair<size_t,uint32_t>>>& M_rows, const std::vector<mpz_class>& X_col,
-                                const std::vector<std::pair<mpz_class,uint32_t>>& factorList);
+std::size_t rank_relation_gf2(const RelationMatrix& rows, std::size_t k);
+
+MpzVector crtSolve(RelationMatrix& M_rows, const MpzVector& X_col, const FactorList& factorList, const std::size_t k);
 
 
