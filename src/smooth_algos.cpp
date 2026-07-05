@@ -1,9 +1,7 @@
-#pragma once
-#include <string>
 #include <gmpxx.h>
-#include <boost/math/special_functions/expint.hpp>
-#include "gauss_dream.h"
 #include "smooth_algos.h"
+#include "gauss_dream.h"
+#include <boost/math/special_functions/expint.hpp>
 #include <vector>
 #include <array>
 #include <cmath>
@@ -15,7 +13,6 @@
 #include <limits>
 #include <algorithm>
 #include <utility>
-
 
 constexpr uint32_t Y_SMOOTHNESS_BOUND = 33'554'432;
 constexpr int DIGITS = 9;
@@ -29,9 +26,9 @@ static std::vector<double> LOG_RHO_LIST;
 
 struct DickmanTableLoader {
     DickmanTableLoader() {
-        const char* src     = __FILE__;
-        const char* slash   = std::strrchr(src, '/');
-        std::string dir     = slash ? std::string(src, slash - src) : ".";
+        const char* src = __FILE__;
+        const char* slash = std::strrchr(src, '/');
+        std::string dir = slash ? std::string(src, slash - src) : ".";
 
         std::string path = dir + "/dickman_table.bin";
         std::ifstream in(path, std::ios::binary);
@@ -48,45 +45,45 @@ struct DickmanTableLoader {
 
         for (uint32_t i = 0; i < n; ++i) {
             double u, lr;
-            in.read(reinterpret_cast<char*>(&u),  sizeof(u));
+            in.read(reinterpret_cast<char*>(&u), sizeof(u));
             in.read(reinterpret_cast<char*>(&lr), sizeof(lr));
-            U_LIST[i]       = u;
+            U_LIST[i] = u;
             LOG_RHO_LIST[i] = lr;
         }
     }
-}; static DickmanTableLoader _dickman_table_loader;
+};
+static DickmanTableLoader _dickman_table_loader;
 
-bool isSmooth(const mpz_class &x_mp, uint32_t y) {
-    if (y > Y_SMOOTHNESS_BOUND ) throw std::invalid_argument("isSmooth: y exceeds max bound");
-    if (x_mp <= y) return true;
-    if (isPrime(x_mp)) return false;
+bool isSmooth(u128 x, uint32_t y) {
+    if (y > Y_SMOOTHNESS_BOUND) throw std::invalid_argument("isSmooth: y exceeds max bound");
+    if (x <= y) return true;
+    if (isPrime(x)) return false;
 
-    mpz_class x = x_mp;
-    uint32_t p;
+    u128 rem = x;
     auto it = std::upper_bound(full_primes_array.begin(), full_primes_array.end(), y);
     size_t idx = it - full_primes_array.begin();
     for (size_t i = 0; i < idx; ++i) {
-        p = full_primes_array[i];
-        if (!mpz_divisible_ui_p(x.get_mpz_t(), p)) continue;
+        uint32_t p = full_primes_array[i];
+        if (rem % p != 0) continue;
         do {
-            mpz_tdiv_q_ui(x.get_mpz_t(), x.get_mpz_t(), p);
-        } while (mpz_divisible_ui_p(x.get_mpz_t(), p));
-        if (x <= y) return true;
-        if (x < p * p) return (x == 1);
-        if (isPrime(x)) return false;
+            rem /= p;
+        } while (rem % p == 0);
+        if (rem <= y) return true;
+        if (rem < (u128)p * p) return rem == 1;
+        if (isPrime(rem)) return false;
     }
-    return (x == 1);
+    return rem == 1;
 }
 
-mpz_class log_mul(const mpz_class& x_mp, double log_rho) {
+u128 log_mul(u128 x, double log_rho) {
     int e10 = static_cast<int>(std::floor(log_rho * inv_ln10));
     double rem = log_rho - e10 * std::log(10.0);
     double mant = std::exp(rem);
 
-    uint32_t M = static_cast<uint32_t>(mant * scale + 0.5);
+    uint32_t coef = static_cast<uint32_t>(mant * scale + 0.5);
     int shift = e10 - (DIGITS - 1);
 
-    mpz_class z = x_mp * M;
+    mpz_class z = u128_to_mpz(x) * coef;
     if (shift != 0) {
         mpz_class pow10;
         mpz_ui_pow_ui(pow10.get_mpz_t(), 10, static_cast<unsigned>(std::abs(shift)));
@@ -96,7 +93,7 @@ mpz_class log_mul(const mpz_class& x_mp, double log_rho) {
             z /= pow10;
         }
     }
-    return z;
+    return mpz_to_u128(z);
 }
 
 double logDickman(double u) {
@@ -109,8 +106,7 @@ double logDickman(double u) {
         double y0 = LOG_RHO_LIST[idx], y1 = LOG_RHO_LIST[idx + 1];
         double h = u1 - u0;
 
-        double d0;
-        double d1;
+        double d0, d1;
         if (idx > 0) {
             double up = U_LIST[idx - 1], yp = LOG_RHO_LIST[idx - 1];
             d0 = (y1 - yp) / (u1 - up);
@@ -123,13 +119,13 @@ double logDickman(double u) {
         } else {
             d1 = (y1 - y0) / h;
         }
-        
+
         double t = (u - u0) / h;
-        double t2 = t*t;
-        double t3 = t2*t;
-        double h00 = 2.0*t3 - 3.0*t2 + 1.0;
-        double h10 = t3 - 2*t2 + t;
-        double h01 = -2*t3 + 3*t2;
+        double t2 = t * t;
+        double t3 = t2 * t;
+        double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        double h10 = t3 - 2 * t2 + t;
+        double h01 = -2 * t3 + 3 * t2;
         double h11 = t3 - t2;
 
         return (h00 * y0 + h10 * h * d0 + h01 * y1 + h11 * h * d1);
@@ -139,20 +135,23 @@ double logDickman(double u) {
     double ex;
     for (int _ = 1; _ <= NEWTON_TRIALS; ++_) {
         ex = std::exp(xi);
-        xi -= (ex - 1.0 - u*xi) / (ex - u);
+        xi -= (ex - 1.0 - u * xi) / (ex - u);
     }
     double Ei_val = boost::math::expint(xi);
-    return (Ei_val - u*xi - std::log(xi) - 0.5*std::log(2*(boost::math::constants::pi<double>())*u));
+    return (Ei_val - u * xi - std::log(xi) - 0.5 * std::log(2 * (boost::math::constants::pi<double>()) * u));
 }
 
-double mp_ln(const mpz_class& x_mp) {
-    signed long int exp2;
-    double m = mpz_get_d_2exp(&exp2, x_mp.get_mpz_t());
-    return std::log(m) + exp2 * LN2;
+double mp_ln(u128 x) {
+    if (x == 0) return -std::numeric_limits<double>::infinity();
+    int bit_len = 128 - clz128(x);
+    int shift = bit_len > 53 ? bit_len - 53 : 0;
+    u128 mantissa_int = shift ? (x >> shift) : x;
+    double mantissa = static_cast<double>(mantissa_int);
+    return std::log(mantissa) + shift * LN2;
 }
 
-mpz_class psiApprox(const mpz_class &x_mp, uint64_t y) {
-    double u = mp_ln(x_mp) / std::log(static_cast<double>(y));
+u128 psiApprox(u128 x, uint64_t y) {
+    double u = mp_ln(x) / std::log(static_cast<double>(y));
     double log_rho = logDickman(u);
-    return log_mul(x_mp, log_rho);
+    return log_mul(x, log_rho);
 }

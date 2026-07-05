@@ -1,0 +1,14 @@
+name: smoothnumbers-dev
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pybind11
+  - gmp
+  - gmpy2
+  - ntl
+  - givaro
+  - fflas-ffpack
+  - linbox
+  - boost
+  - clangxx_osx-arm64

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "pybind11>=2.11"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smooth"
+version = "0.0.1"
+description = "A double index calculus discrete-log implementation, with a C++/pybind11 core"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-timeout>=2.3"]
+
+[tool.setuptools]
+zip-safe = false
