@@ -32,7 +32,7 @@ static std::size_t CAP_END;
 
 static constexpr u128 DETERMINISTIC_MR_BOUND = (((u128)0x2be69ULL) << 64) | (u128)0x51adc5b22410a5fdULL;
 static constexpr std::array<uint64_t, 7> SMALL_WITNESSES = {2, 325, 9375, 28178, 450775, 9780504, 1795265022};
-static constexpr int RANDOM_MR_ROUNDS = 40;
+static constexpr int RANDOM_MR_ROUNDS = 20;
 
 static thread_local std::mt19937_64 witness_rng{std::random_device{}()};
 
@@ -105,15 +105,37 @@ bool miller_rabin_pass(u128 n, u128 d, unsigned s, u128 a,
 }
 
 u128 isqrt(u128 n) {
-    return 0;
+    if (n == 0) return 0;
+
+    u128 x = ((u128)1) << (((127 - clz128(n)) / 2) + 1);
+
+    while (true) {
+        u128 xNext = (x + (n / x)) / 2;
+        if (xNext >= x) return x;
+        x = xNext;
+    }
 }
 
 bool cube_le(u128 r, u128 n) {
-    return false;
+    if (r == 0) return true;
+    return r <= ((n / r) / r);
 }
 
 u128 icbrt(u128 n) {
-    return 0;
+    if (n == 0) return 0;
+
+    u128 x = ((u128)1) << (((127 - clz128(n)) / 3) + 1);
+
+    while (true) {
+        u128 xNext = ((2 * x + ((n / x) / x))) / 3;
+        if (xNext >= x) break;
+        x = xNext;
+    }
+
+    if (!cube_le(x, n)) x--;
+    else if (cube_le(x + 1, n)) x++;
+
+    return x;
 }
 
 } // namespace

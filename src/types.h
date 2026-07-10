@@ -31,3 +31,17 @@ inline int clz128(u128 x) {
     uint64_t lo = (uint64_t)x;
     return lo != 0 ? 64 + __builtin_clzll(lo) : 128;
 }
+
+inline int ctz128(u128 x) {
+    uint64_t lo = (uint64_t)x;
+    if (lo != 0) return __builtin_ctzll(lo);
+    uint64_t hi = (uint64_t)(x >> 64);
+    return (hi != 0) ? 64 + __builtin_ctzll(hi) : 128;
+}
+
+inline int popcount128(u128 x) {
+    uint64_t lo = (uint64_t)x;
+    uint64_t hi = (uint64_t)(x >> 64);
+
+    return __builtin_popcountll(lo) + __builtin_popcountll(hi);
+}

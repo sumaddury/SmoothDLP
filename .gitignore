@@ -8,3 +8,6 @@ build/
 .DS_Store
 smooth.egg-info/
 scripts/
+.claude/
+tests/internal/test_montgomery
+tests/internal/*.o
