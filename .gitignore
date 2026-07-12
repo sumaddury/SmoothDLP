@@ -10,5 +10,9 @@ smooth.egg-info/
 scripts/
 .claude/
 tests/internal/test_montgomery
+tests/internal/test_infra
+tests/internal/test_gauss_dream
+tests/internal/test_smooth_algos
+tests/internal/*.dSYM
 tests/internal/*.o
 notebooks/
