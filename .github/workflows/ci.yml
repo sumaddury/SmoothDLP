@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # environment.yml pins clangxx_osx-arm64, a macOS-ARM64-only conda-forge
+    # package -- this must stay on an arm64 macOS runner to match it.
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache conda packages
+        uses: actions/cache@v4
+        with:
+          path: ~/conda_pkgs_dir
+          key: conda-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: environment.yml
+          activate-environment: smoothnumbers-dev
+          use-mamba: true
+
+      - name: Build smooth._core and install dev dependencies
+        run: pip install -e '.[dev]'
+
+      - name: Run Python test suite
+        run: python -m pytest tests/ -q
+
+      - name: Run C++ internal test suite
+        run: make -C tests/internal test
