@@ -11,3 +11,4 @@ scripts/
 .claude/
 tests/internal/test_montgomery
 tests/internal/*.o
+notebooks/
