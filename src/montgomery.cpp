@@ -163,12 +163,64 @@ u128 reduce256(u128 hi, u128 lo, u128 n) {
 
 	u128 output = ((u128)w_limbs[2] << 64) | w_limbs[1];
 	if (d) output >>= d;
-
+	
 	return output;
+	 
 }
 
 u128 mulmod(u128 a_bar, u128 b_bar, u128 n, u128 n_prime) {
+	u128 T_hi, T_lo;
+	mul128(a_bar, b_bar, T_hi, T_lo);
 
+	u128 m = -( T_lo * n_prime );
+
+	u128 mn_hi, mn_lo;
+	mul128(m, n, mn_hi, mn_lo);
+
+	u128 sum_lo = T_lo + mn_lo;
+	bool carry_lo = (sum_lo < T_lo) ? 1 : 0;
+
+	u128 s = T_hi + mn_hi;
+	bool carry_out = (s < T_hi) ? 1 : 0;
+	u128 t_wrapped = s + carry_lo;
+	carry_out |= (t_wrapped < s) ? 1 : 0;
+
+	return (carry_out || t_wrapped >= n) ? t_wrapped - n : t_wrapped;
 }
+
+u128 pow2mod_odd(u128 base, unsigned bits, u128 n, u128 n_prime, u128 r2) {
+
+	u128 b0 = base % n;
+	u128 x_bar = mulmod(b0, r2, n, n_prime);
+
+	for (;bits; bits--) x_bar = mulmod(x_bar, x_bar, n, n_prime);
+
+	return mulmod(x_bar, 1, n, n_prime);
+}
+
+u128 pow2mod(u128 base, unsigned bits, u128 n, u128 m_prime, u128 r2_m) {
+	if (n == 1) return 0;
+	
+	int e = ctz128(n);
+
+	u128 mask = ((u128)1 << e) - 1;
+	u128 x = base & mask;
+
+	for (int k = 0; k < bits; k++) x = (x * x) & mask;
+
+	u128 m = (n >> e);
+
+	if (m == 1) return x;
+					
+	u128 r_m = pow2mod_odd(base, bits, m, m_prime, r2_m);
+	u128 m_inv = m_prime & mask;
+
+	u128 t = ((x - r_m) * m_inv) & mask;
+	return r_m + m * t;
+	
+}
+	
+
+
 
 } // namespace mont

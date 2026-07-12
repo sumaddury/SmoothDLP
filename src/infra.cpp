@@ -12,6 +12,15 @@
 #include <cassert>
 #include <cstring>
 #include <numeric>
+
+// The LinBox/Givaro-based sparse linear solve below (linSolve/linSolveImpl/
+// crtSolve/rank_relation_gf2, and the includes/typedefs they need) is
+// disabled: we haven't actually figured out how to use Givaro/LinBox
+// correctly yet, so no line of code touching either library should be
+// trusted. Nothing else in this file depends on any of it -- buildProductTree
+// /smoothCandidates/treeFactorize only ever use GMP + montgomery.h. Not
+// declared in infra.h, not bound in core.cpp, not covered by any test.
+#if 0
 #include <linbox/matrix/sparse-matrix.h>
 
 #include <linbox/linbox-config.h>
@@ -37,6 +46,7 @@ template<typename Field> using Vec = LinBox::DenseVector<Field>;
 struct Part { MpzVector x; mpz_class mod; };
 using Seq = LinBox::SparseMatrixFormat::SparseSeq;
 using Gf2 = LinBox::GF2;
+#endif // LinBox/Givaro disabled
 
 std::vector<MpzVector> buildProductTree(MpzVector level) {
     size_t lvl_size = level.size();
@@ -106,7 +116,14 @@ std::vector<size_t> smoothCandidates(const std::vector<MpzVector>& p_levels, con
     for (size_t i = 0; i < X.size(); ++i) {
         u128 x = X[i];
         u128 r = mpz_to_u128(rems[i]);
-        u128 y = mont::pow2mod(r, bits, x);
+        // pow2mod's m_prime/r2_m are relative to x's odd part (not x
+        // itself), computed via the montgomery interfaces. Each candidate
+        // here is a distinct modulus, called once, so there's nothing to
+        // reuse across iterations -- just compute and pass through.
+        u128 m = x >> ctz128(x);
+        u128 m_prime = mont::inverse(m);
+        u128 r2_m = mont::r_squared_mod_n(m);
+        u128 y = mont::pow2mod(r, bits, x, m_prime, r2_m);
         u128 g = mont::gcd(x, y);
         if (g == x) smooth_cands.push_back(i);
     }
@@ -155,6 +172,12 @@ SparseList treeFactorize(const std::vector<MpzVector>& p_levels, u128 d_u128) {
     return result;
 }
 
+// Disabled along with the LinBox/Givaro includes/typedefs above -- see the
+// comment there. linSolveImpl/linSolve/dot_row/inv_mod/hensel_update/
+// garner_step/rank_relation_gf2/crtSolve are the entire untrusted
+// LinBox-based sparse solve + CRT/Hensel-lift pipeline; none of it is
+// exercised by anything outside this disabled block.
+#if 0
 template<typename Field>
 static void linSolveImpl(const RelationMatrix& M_rows, const MpzVector& X_col, unsigned long p_ui, MpzVector& L_out) {
     Field F(static_cast<typename Field::Element>(p_ui));
@@ -296,3 +319,4 @@ U128Vector crtSolve(RelationMatrix& M_rows, const U128Vector& X_col, const Facto
     for (std::size_t j = 0; j < k; ++j) L_out[j] = mpz_to_u128(L[j]);
     return L_out;
 }
+#endif // LinBox/Givaro disabled

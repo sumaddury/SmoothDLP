@@ -6,12 +6,26 @@
 // which double as this suite's oracle). See the Makefile in this directory
 // for the exact build command.
 //
-// Only functions that are actually implemented in montgomery.cpp are tested
-// here: mul128, gcd, mulmod_any, inverse, r_squared_mod_n, reduce256. Add
-// sections for the remaining mont:: functions (mulmod, pow2mod_odd,
-// pow2mod_any, pow2mod) as they get implemented -- testing them before then
-// will fail to link, since montgomery.h declares them but no definition
-// exists yet.
+// All mont:: functions declared in montgomery.h are implemented and tested
+// here: mul128, gcd, mulmod_any, inverse, r_squared_mod_n, reduce256, mulmod,
+// pow2mod_odd, pow2mod.
+//
+// Note the current shape of the pow2mod family (there is no separate
+// "pow2mod_any" anymore -- it was folded into pow2mod itself):
+//   - pow2mod_odd(base, bits, n, n_prime, r2) computes base^(2^bits) mod n
+//     for odd n via Montgomery-form repeated squaring.
+//   - pow2mod(base, bits, n, m_prime, r2_m) computes base^(2^bits) mod n for
+//     ANY n (odd or even) by splitting n = 2^e * m (m odd, e = ctz(n)),
+//     solving the 2^e part with a cheap bitmask (no division), solving the m
+//     part by calling pow2mod_odd, and recombining with CRT (Garner). Its
+//     m_prime/r2_m parameters are relative to *m* (n's odd part), not to n.
+// In both cases, n_prime/m_prime = mont::inverse(n or m) and
+// r2/r2_m = mont::r_squared_mod_n(n or m) are precomputed by the caller and
+// passed in, rather than recomputed internally on every call -- this avoids
+// repeated, expensive mulmod_any-based r_squared_mod_n calls when the same
+// modulus is reused across several pow2mod*/mulmod calls (mirroring how
+// gauss_dream.cpp's isPrime already hoists n_prime/r2 out of its
+// per-witness Miller-Rabin loop).
 
 #include "montgomery.h"
 #include "types.h"
@@ -415,6 +429,213 @@ void test_r_squared_mod_n_random() {
     }
 }
 
+// ---- mont::mulmod (Montgomery REDC) -----------------------------------
+//
+// Contract: mulmod(a_bar, b_bar, n, n_prime) computes (a_bar * b_bar * R^-1)
+// mod n, where R = 2^128 and n_prime = mont::inverse(n) (the *positive*
+// inverse, n * n_prime == 1 mod R -- mulmod negates it internally to get the
+// REDC constant n' with n * n' == -1 mod R, so callers always pass
+// mont::inverse(n) directly, never a pre-negated value). Requires n odd, and
+// a_bar, b_bar already reduced (< n) -- that's how every call site in this
+// codebase (gauss_dream.cpp's Miller-Rabin, pow2mod_odd below) uses it, and
+// it's also the precondition classic REDC needs (T = a_bar*b_bar < n*R) to
+// guarantee the single conditional subtraction fully reduces the result.
+
+u128 mulmod_oracle(u128 a_bar, u128 b_bar, u128 n) {
+    mpz_class A = u128_to_mpz(a_bar);
+    mpz_class B = u128_to_mpz(b_bar);
+    mpz_class N = u128_to_mpz(n);
+    mpz_class R = mpz_class(1) << 128;
+    mpz_class R_inv;
+    mpz_invert(R_inv.get_mpz_t(), R.get_mpz_t(), N.get_mpz_t());
+    mpz_class P = ((A * B) % N) * R_inv % N;
+    return mpz_to_u128(P);
+}
+
+void test_mulmod_edge_cases() {
+    // n = 1: everything reduces to 0.
+    {
+        u128 n = 1;
+        u128 n_prime = mont::inverse(n);
+        CHECK_EQ_U128(mont::mulmod(0, 0, n, n_prime), 0, "mulmod n=1");
+    }
+    // a_bar = 0 / b_bar = 0.
+    {
+        u128 n = 97;
+        u128 n_prime = mont::inverse(n);
+        CHECK_EQ_U128(mont::mulmod(0, 42, n, n_prime), 0, "mulmod a_bar=0");
+        CHECK_EQ_U128(mont::mulmod(42, 0, n, n_prime), 0, "mulmod b_bar=0");
+    }
+    // n odd, near 2^128.
+    {
+        u128 n = U128_MAX;
+        u128 n_prime = mont::inverse(n);
+        u128 a = n - 1, b = n - 2;
+        CHECK_EQ_U128(mont::mulmod(a, b, n, n_prime), mulmod_oracle(a, b, n),
+                      "mulmod large odd n near 2^128");
+    }
+    // Smallest odd n > 1.
+    {
+        u128 n = 3;
+        u128 n_prime = mont::inverse(n);
+        CHECK_EQ_U128(mont::mulmod(2, 2, n, n_prime), mulmod_oracle(2, 2, n),
+                      "mulmod n=3");
+    }
+}
+
+void test_mulmod_random() {
+    constexpr int kIters = 20000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits) | 1; // force odd
+        u128 n_prime = mont::inverse(n);
+        u128 a = random_u128() % n;
+        u128 b = random_u128() % n;
+        u128 got = mont::mulmod(a, b, n, n_prime);
+        u128 want = mulmod_oracle(a, b, n);
+        CHECK_EQ_U128(got, want, "mulmod random");
+    }
+}
+
+void test_mulmod_result_in_range() {
+    constexpr int kIters = 5000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits) | 1;
+        u128 n_prime = mont::inverse(n);
+        u128 a = random_u128() % n;
+        u128 b = random_u128() % n;
+        u128 got = mont::mulmod(a, b, n, n_prime);
+        CHECK(got < n);
+    }
+}
+
+// ---- mont::pow2mod_odd -------------------------------------------------
+//
+// Contract: pow2mod_odd(base, bits, n, n_prime, r2) computes
+// base^(2^bits) mod n for odd n, via `bits` Montgomery-form squarings (not
+// square-and-multiply over an arbitrary exponent -- the exponent here is
+// always exactly a power of two, so plain repeated squaring is exact).
+// n_prime = mont::inverse(n), r2 = mont::r_squared_mod_n(n): both computed
+// once by the caller and passed in (see file-header note above).
+
+u128 pow2mod_oracle(u128 base, unsigned bits, u128 n) {
+    mpz_class B = u128_to_mpz(base) % u128_to_mpz(n);
+    mpz_class N = u128_to_mpz(n);
+    mpz_class E = mpz_class(1) << bits;
+    mpz_class P;
+    mpz_powm(P.get_mpz_t(), B.get_mpz_t(), E.get_mpz_t(), N.get_mpz_t());
+    return mpz_to_u128(P);
+}
+
+void test_pow2mod_odd_edge_cases() {
+    struct Case { u128 base; unsigned bits; u128 n; };
+    Case cases[] = {
+        {5, 0, 97},                     // bits=0: base^1 mod n, no squarings
+        {0, 10, 97},                    // base = 0
+        {96, 5, 97},                    // base = n-1
+        {2, 1, 3},                      // smallest odd n > 1
+        {U128_MAX - 2, 20, U128_MAX},   // n odd, near 2^128
+        {7, 127, 97},                   // large bits
+    };
+    for (auto& c : cases) {
+        u128 n_prime = mont::inverse(c.n);
+        u128 r2 = mont::r_squared_mod_n(c.n);
+        u128 got = mont::pow2mod_odd(c.base, c.bits, c.n, n_prime, r2);
+        u128 want = pow2mod_oracle(c.base, c.bits, c.n);
+        CHECK_EQ_U128(got, want, "pow2mod_odd edge case");
+    }
+}
+
+void test_pow2mod_odd_random() {
+    constexpr int kIters = 20000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits_n = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits_n) | 1;
+        u128 n_prime = mont::inverse(n);
+        u128 r2 = mont::r_squared_mod_n(n);
+        u128 base = random_u128();
+        unsigned bits = (unsigned)(rng() % 40);
+        u128 got = mont::pow2mod_odd(base, bits, n, n_prime, r2);
+        u128 want = pow2mod_oracle(base, bits, n);
+        CHECK_EQ_U128(got, want, "pow2mod_odd random");
+    }
+}
+
+// ---- mont::pow2mod (general n, via CRT split n = 2^e * m) --------------
+//
+// Contract: pow2mod(base, bits, n, m_prime, r2_m) computes
+// base^(2^bits) mod n for ANY n >= 1. Internally splits n = 2^e * m
+// (e = ctz(n), m odd), solves mod 2^e with a bitmask, solves mod m via
+// pow2mod_odd, and recombines with CRT/Garner. Crucially, m_prime/r2_m are
+// relative to *m* (n's odd part), not to n -- pow2mod_params_for below
+// mirrors exactly what a caller must compute.
+
+struct PowModParams { u128 m_prime, r2_m; };
+
+PowModParams pow2mod_params_for(u128 n) {
+    int e = ctz128(n);
+    u128 m = n >> e;
+    return {mont::inverse(m), mont::r_squared_mod_n(m)};
+}
+
+void test_pow2mod_edge_cases() {
+    CHECK_EQ_U128(mont::pow2mod(12345, 10, 1, 0, 0), 0, "pow2mod n=1");
+
+    struct Case { u128 base; unsigned bits; u128 n; };
+    Case cases[] = {
+        {5, 10, 2},                  // n=2: pure power of two (m=1)
+        {5, 10, 1024},               // n=2^10: pure power of two (m=1)
+        {5, 10, 97},                 // n odd: reduces to pow2mod_odd (e=0)
+        {5, 10, U128_MAX},           // n odd, near 2^128
+        {123, 8, 96},                // n = 2^5 * 3: mixed
+        {123, 8, (u128)3 << 100},    // large mixed n
+        {0, 5, 50},                  // base = 0
+    };
+    for (auto& c : cases) {
+        auto p = pow2mod_params_for(c.n);
+        u128 got = mont::pow2mod(c.base, c.bits, c.n, p.m_prime, p.r2_m);
+        u128 want = pow2mod_oracle(c.base, c.bits, c.n);
+        CHECK_EQ_U128(got, want, "pow2mod edge case");
+    }
+}
+
+void test_pow2mod_random() {
+    constexpr int kIters = 20000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits_n = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits_n);
+        if (n == 0) n = 1;
+        u128 base = random_u128();
+        unsigned bits = (unsigned)(rng() % 40);
+
+        auto p = pow2mod_params_for(n);
+        u128 got = mont::pow2mod(base, bits, n, p.m_prime, p.r2_m);
+        u128 want = pow2mod_oracle(base, bits, n);
+        CHECK_EQ_U128(got, want, "pow2mod random");
+    }
+}
+
+// pow2mod must agree with pow2mod_odd whenever n happens to be odd (e=0,
+// the CRT split degenerates to just the odd cofactor).
+void test_pow2mod_matches_pow2mod_odd_for_odd_n() {
+    constexpr int kIters = 2000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits_n = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits_n) | 1;
+        u128 base = random_u128();
+        unsigned bits = (unsigned)(rng() % 40);
+
+        u128 n_prime = mont::inverse(n);
+        u128 r2 = mont::r_squared_mod_n(n);
+        u128 want = mont::pow2mod_odd(base, bits, n, n_prime, r2);
+
+        auto p = pow2mod_params_for(n);
+        u128 got = mont::pow2mod(base, bits, n, p.m_prime, p.r2_m);
+        CHECK_EQ_U128(got, want, "pow2mod matches pow2mod_odd for odd n");
+    }
+}
+
 struct TestCase {
     const char* name;
     void (*fn)();
@@ -438,6 +659,14 @@ int main() {
         {"inverse_is_odd", test_inverse_is_odd},
         {"r_squared_mod_n_edge_cases", test_r_squared_mod_n_edge_cases},
         {"r_squared_mod_n_random", test_r_squared_mod_n_random},
+        {"mulmod_edge_cases", test_mulmod_edge_cases},
+        {"mulmod_random", test_mulmod_random},
+        {"mulmod_result_in_range", test_mulmod_result_in_range},
+        {"pow2mod_odd_edge_cases", test_pow2mod_odd_edge_cases},
+        {"pow2mod_odd_random", test_pow2mod_odd_random},
+        {"pow2mod_edge_cases", test_pow2mod_edge_cases},
+        {"pow2mod_random", test_pow2mod_random},
+        {"pow2mod_matches_pow2mod_odd_for_odd_n", test_pow2mod_matches_pow2mod_odd_for_odd_n},
     };
 
     for (auto& t : tests) {
