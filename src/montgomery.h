@@ -54,4 +54,6 @@ u128 mulmod_any(u128 a, u128 b, u128 n);
 // m_prime = mont::inverse(n >> ctz(n)), r2_m = mont::r_squared_mod_n(n >> ctz(n)).
 u128 pow2mod(u128 base, unsigned bits, u128 n, u128 m_prime, u128 r2_m);
 
+u128 powmod_odd(u128 base, unsigned e, u128 n, u128 n_prime, u128 r2);
+
 } // namespace mont

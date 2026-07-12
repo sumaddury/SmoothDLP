@@ -219,6 +219,24 @@ u128 pow2mod(u128 base, unsigned bits, u128 n, u128 m_prime, u128 r2_m) {
 	return r_m + m * t;
 	
 }
+
+u128 powmod_odd(u128 base, unsigned e, u128 n, u128 n_prime, u128 r2) {
+	if (n == 1) return 0;
+
+	u128 b0 = base % n;
+	u128 x_base = mulmod(b0, r2, n, n_prime);
+	u128 x_bar = mulmod(1, r2, n, n_prime);
+
+	while (e) {
+		if (e & 1) x_bar = mulmod(x_bar, x_base, n, n_prime);
+
+		x_base = mulmod(x_base, x_base, n, n_prime);
+
+		e >>= 1;
+	}
+
+	return mulmod(x_bar, 1, n, n_prime);
+}
 	
 
 

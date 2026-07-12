@@ -8,7 +8,7 @@
 //
 // All mont:: functions declared in montgomery.h are implemented and tested
 // here: mul128, gcd, mulmod_any, inverse, r_squared_mod_n, reduce256, mulmod,
-// pow2mod_odd, pow2mod.
+// pow2mod_odd, pow2mod, powmod_odd.
 //
 // Note the current shape of the pow2mod family (there is no separate
 // "pow2mod_any" anymore -- it was folded into pow2mod itself):
@@ -636,6 +636,123 @@ void test_pow2mod_matches_pow2mod_odd_for_odd_n() {
     }
 }
 
+// ---- mont::powmod_odd (arbitrary-exponent square-and-multiply) --------
+//
+// Contract: powmod_odd(base, e, n, n_prime, r2) computes base^e mod n for
+// odd n and an arbitrary exponent e (unlike pow2mod_odd, e need not be a
+// power of two -- this does real square-and-multiply, not just repeated
+// squaring). n_prime = mont::inverse(n), r2 = mont::r_squared_mod_n(n),
+// same hoisting convention as pow2mod_odd. Note `e` is a plain `unsigned`
+// (32 bits), not u128 like every modulus/base in this file -- so this
+// currently cannot represent exponents needing more than 32 bits.
+
+u128 powmod_oracle(u128 base, unsigned e, u128 n) {
+    mpz_class B = u128_to_mpz(base) % u128_to_mpz(n);
+    mpz_class N = u128_to_mpz(n);
+    mpz_class E = e;
+    mpz_class P;
+    mpz_powm(P.get_mpz_t(), B.get_mpz_t(), E.get_mpz_t(), N.get_mpz_t());
+    return mpz_to_u128(P);
+}
+
+void test_powmod_odd_edge_cases() {
+    struct Case { u128 base; unsigned e; u128 n; };
+    Case cases[] = {
+        {5, 0, 97},                        // e=0: base^0 == 1 mod n
+        {0, 0, 97},                        // base=0, e=0: 0^0 == 1 by convention
+        {0, 5, 97},                        // base=0, e>0: 0^e == 0
+        {5, 1, 97},                        // e=1: base mod n
+        {96, 5, 97},                       // base = n-1 (i.e. -1 mod n), odd e
+        {96, 6, 97},                       // base = n-1, even e
+        {2, 10, 1024 * 1024 * 1024 + 7},   // not a power-of-two exponent
+        {2, 1, 3},                         // smallest odd n > 1
+        {U128_MAX - 2, 12345, U128_MAX},   // n odd, near 2^128
+        {7, 0xFFFFFFFFu, 97},              // e at the top of unsigned's range
+    };
+    for (auto& c : cases) {
+        u128 n_prime = mont::inverse(c.n);
+        u128 r2 = mont::r_squared_mod_n(c.n);
+        u128 got = mont::powmod_odd(c.base, c.e, c.n, n_prime, r2);
+        u128 want = powmod_oracle(c.base, c.e, c.n);
+        CHECK_EQ_U128(got, want, "powmod_odd edge case");
+    }
+}
+
+void test_powmod_odd_random() {
+    constexpr int kIters = 20000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits_n = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits_n) | 1;
+        u128 n_prime = mont::inverse(n);
+        u128 r2 = mont::r_squared_mod_n(n);
+        u128 base = random_u128();
+        unsigned e = (unsigned)rng(); // exercise the full unsigned range
+        u128 got = mont::powmod_odd(base, e, n, n_prime, r2);
+        u128 want = powmod_oracle(base, e, n);
+        CHECK_EQ_U128(got, want, "powmod_odd random");
+    }
+}
+
+void test_powmod_odd_result_in_range() {
+    constexpr int kIters = 5000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits_n = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits_n) | 1;
+        u128 n_prime = mont::inverse(n);
+        u128 r2 = mont::r_squared_mod_n(n);
+        u128 base = random_u128();
+        unsigned e = (unsigned)rng();
+        u128 got = mont::powmod_odd(base, e, n, n_prime, r2);
+        CHECK(got < n);
+    }
+}
+
+// powmod_odd must agree with pow2mod_odd whenever e is exactly a power of
+// two -- two independently-shaped algorithms (square-and-multiply over an
+// arbitrary exponent vs. plain repeated squaring over a bits count) that
+// should land on exactly the same value.
+void test_powmod_odd_matches_pow2mod_odd_for_power_of_two_e() {
+    constexpr int kIters = 2000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits_n = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits_n) | 1;
+        u128 n_prime = mont::inverse(n);
+        u128 r2 = mont::r_squared_mod_n(n);
+        u128 base = random_u128();
+        unsigned bits = (unsigned)(rng() % 32); // keep 2^bits within unsigned range
+
+        u128 want = mont::pow2mod_odd(base, bits, n, n_prime, r2);
+        u128 got = mont::powmod_odd(base, (unsigned)1 << bits, n, n_prime, r2);
+        CHECK_EQ_U128(got, want, "powmod_odd matches pow2mod_odd for e = 2^bits");
+    }
+}
+
+// Exponent law: base^(e1) * base^(e2) == base^(e1+e2) mod n. A property
+// check independent of the GMP oracle, using mulmod to combine two
+// powmod_odd results in Montgomery-ish ordinary form.
+void test_powmod_odd_exponent_law() {
+    constexpr int kIters = 5000;
+    for (int i = 0; i < kIters; ++i) {
+        int bits_n = 1 + (int)(rng() % 128);
+        u128 n = random_u128_bits(bits_n) | 1;
+        u128 n_prime = mont::inverse(n);
+        u128 r2 = mont::r_squared_mod_n(n);
+        u128 base = random_u128();
+
+        // Keep e1+e2 within unsigned range to avoid wraparound changing the
+        // mathematical exponent being compared.
+        unsigned e1 = (unsigned)(rng() % (1u << 20));
+        unsigned e2 = (unsigned)(rng() % (1u << 20));
+
+        u128 r1 = mont::powmod_odd(base, e1, n, n_prime, r2);
+        u128 r2_val = mont::powmod_odd(base, e2, n, n_prime, r2);
+        u128 combined = mont::mulmod_any(r1, r2_val, n);
+
+        u128 want = mont::powmod_odd(base, e1 + e2, n, n_prime, r2);
+        CHECK_EQ_U128(combined, want, "powmod_odd exponent law: base^e1 * base^e2 == base^(e1+e2)");
+    }
+}
+
 struct TestCase {
     const char* name;
     void (*fn)();
@@ -667,6 +784,11 @@ int main() {
         {"pow2mod_edge_cases", test_pow2mod_edge_cases},
         {"pow2mod_random", test_pow2mod_random},
         {"pow2mod_matches_pow2mod_odd_for_odd_n", test_pow2mod_matches_pow2mod_odd_for_odd_n},
+        {"powmod_odd_edge_cases", test_powmod_odd_edge_cases},
+        {"powmod_odd_random", test_powmod_odd_random},
+        {"powmod_odd_result_in_range", test_powmod_odd_result_in_range},
+        {"powmod_odd_matches_pow2mod_odd_for_power_of_two_e", test_powmod_odd_matches_pow2mod_odd_for_power_of_two_e},
+        {"powmod_odd_exponent_law", test_powmod_odd_exponent_law},
     };
 
     for (auto& t : tests) {
