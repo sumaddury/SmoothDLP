@@ -5,6 +5,8 @@
 #include "montgomery.h"
 #include <random>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <vector>
 #include <utility>
@@ -12,6 +14,8 @@
 #include <cassert>
 #include <cstring>
 #include <numeric>
+
+namespace infra {
 
 // The LinBox/Givaro-based sparse linear solve below (linSolve/linSolveImpl/
 // crtSolve/rank_relation_gf2, and the includes/typedefs they need) is
@@ -172,151 +176,76 @@ SparseList treeFactorize(const std::vector<MpzVector>& p_levels, u128 d_u128) {
     return result;
 }
 
+namespace {
+
+// Uniform random value in [0, L] via rejection sampling: draw a full 128-bit
+// value, mask it down to L's bit range (mask is the caller-supplied all-ones
+// bitmask covering [0, L]), and retry on the rare draw that still lands
+// above L. Below 2^64, a single uniform_int_distribution draw suffices.
+u128 drawT(u128 L, u128 mask) {
+  thread_local std::random_device rd;
+  thread_local std::mt19937_64 gen(rd());
+
+  if (L <= std::numeric_limits<uint64_t>::max())
+    return std::uniform_int_distribution<uint64_t>(0, (uint64_t)L)(gen);
+
+  u128 num;
+
+  do {
+    uint64_t lo = std::uniform_int_distribution<uint64_t>(
+        0, std::numeric_limits<uint64_t>::max())(gen);
+    uint64_t hi = std::uniform_int_distribution<uint64_t>(
+        0, std::numeric_limits<uint64_t>::max())(gen);
+    num = (((u128)hi << 64) | (u128)lo) & mask;
+  } while (num > L);
+
+  return num;
+}
+
+} // namespace
+
+void addRelations(
+    u128 base,
+    const ProblemParams& params,
+    std::vector<SparseList>& M,
+    U128Vector& X) {
+  const size_t k = params.p_levels[0].size();
+  size_t added = 0;
+
+  while (added < k) {
+    size_t batch_size = (size_t)std::ceil((double)(k - added) / params.smooth_density);
+
+    U128Vector batch, t_batch;
+    batch.reserve(batch_size);
+    t_batch.reserve(batch_size);
+
+    for (size_t iter = 0; iter < batch_size; iter++) {
+      u128 t = drawT(params.p - 2, params.mask);
+      u128 x = mont::powmod_odd(base, t, params.p, params.p_prime, params.r2);
+      batch.push_back(x);
+      t_batch.push_back(t);
+    }
+
+    auto smooth_x = smoothCandidates(params.p_levels, batch);
+
+    for (size_t idx : smooth_x) {
+      M.push_back(treeFactorize(params.p_levels, batch[idx]));
+      X.push_back(t_batch[idx]);
+    }
+
+    added += smooth_x.size();
+  }
+}
+
+} // namespace infra
+
 // Disabled along with the LinBox/Givaro includes/typedefs above -- see the
 // comment there. linSolveImpl/linSolve/dot_row/inv_mod/hensel_update/
 // garner_step/rank_relation_gf2/crtSolve are the entire untrusted
 // LinBox-based sparse solve + CRT/Hensel-lift pipeline; none of it is
 // exercised by anything outside this disabled block.
 #if 0
-template<typename Field>
-static void linSolveImpl(const RelationMatrix& M_rows, const MpzVector& X_col, unsigned long p_ui, MpzVector& L_out) {
-    Field F(static_cast<typename Field::Element>(p_ui));
 
-    const std::size_t m = M_rows.size();
-    const std::size_t k = L_out.size();
 
-    Sparse<Field> M(F, m, k);
-    Vec<Field> b(F, m), x(F, k), xBackup(F, k);
 
-    for (std::size_t i = 0; i < m; ++i) {
-        for (auto [j, e32] : M_rows[i]) {
-            typename Field::Element e;
-            F.init(e, e32);
-            M.setEntry(i, j, e);
-        }
-        typename Field::Element rhs;
-        F.init(rhs, mpz_fdiv_ui(X_col[i].get_mpz_t(), p_ui));
-        b[i] = rhs;
-    }
-    M.finalize();
-
-    if constexpr (std::is_same_v<Field, Field64>) LinBox::solve(x, M, b, LinBox::Method::Wiedemann());
-    else {
-        try {
-            LinBox::solve(x, M, b, LinBox::Method::SparseElimination());
-        } catch (const LinBox::LinboxError& e) {
-            x = xBackup;
-            LinBox::solve(x, M, b, LinBox::Method::Wiedemann());
-        }
-    }
-
-    for (std::size_t j = 0; j < k; ++j) {
-        typename Field::Element v = x[j];
-        L_out[j] = mpz_class(static_cast<unsigned long>(v));
-    }
-}
-
-static void linSolve(const RelationMatrix& M_rows, const MpzVector& X_col,
-                      const mpz_class& prime_mpz, MpzVector& L_out) {
-    unsigned long bits = mpz_sizeinbase(prime_mpz.get_mpz_t(), 2);
-    unsigned long p_ui = prime_mpz.get_ui();
-
-    if (bits > 32) linSolveImpl<Field64>(M_rows, X_col, p_ui, L_out);
-    else linSolveImpl<Field32>(M_rows, X_col, p_ui, L_out);
-}
-
-static inline mpz_class dot_row(const std::vector<std::pair<size_t, uint32_t>>& row, const std::vector<mpz_class>& vec) {
-    mpz_class sum = 0;
-    for (auto [col, coeff32] : row)
-        sum += mpz_class(coeff32) * vec[col];
-    return sum;
-}
-
-static inline mpz_class inv_mod(const mpz_class& a, const mpz_class& m) {
-    mpz_class inv;
-    int ok = mpz_invert(inv.get_mpz_t(), a.get_mpz_t(), m.get_mpz_t());
-    assert(ok);
-    return inv;
-}
-
-static inline void hensel_update(MpzVector& x, const MpzVector& delta, const mpz_class& q_pow) {
-    const std::size_t n = x.size();
-    for (std::size_t j = 0; j < n; ++j)
-        x[j] += q_pow * delta[j];
-}
-
-static inline void garner_step(MpzVector& X, MpzVector& prefix, const MpzVector& xi, const mpz_class& mi) {
-    const mpz_class inv = inv_mod(prefix[0], mi);
-    const std::size_t n = X.size();
-    for (std::size_t j = 0; j < n; ++j) {
-        mpz_class t = ((xi[j] - X[j]) * inv) % mi;
-        X[j] += prefix[j] * t;
-        prefix[j] *= mi;
-    }
-}
-
-std::size_t rank_relation_gf2(const RelationMatrix& rows, std::size_t k) {
-    Gf2 F;
-    Gf2::Element one;
-    F.init(one, true);
-
-    LinBox::ZeroOne<Gf2> A(F, rows.size(), k);
-    for (std::size_t i = 0; i < rows.size(); ++i)
-        for (const auto& cell : rows[i])
-            if (cell.second & 1U)
-                A.setEntry(i, cell.first, one);
-
-    std::size_t r = 0;
-    LinBox::GaussDomain<Gf2> D(F);
-    D.rank(r, A);
-    return r;
-}
-
-U128Vector crtSolve(RelationMatrix& M_rows, const U128Vector& X_col, const FactorList& factorList, std::size_t k) {
-    MpzVector X_mp;
-    X_mp.reserve(X_col.size());
-    for (u128 x : X_col) X_mp.push_back(u128_to_mpz(x));
-
-    std::vector<Part> partial;
-    partial.reserve(factorList.size());
-
-    for (const auto& [q_u128, e] : factorList) {
-        mpz_class q = u128_to_mpz(q_u128);
-        MpzVector x_q(k);
-        linSolve(M_rows, X_mp, q, x_q);
-
-        mpz_class q_pow = q;
-        if (e > 1) {
-            MpzVector Ax(M_rows.size());
-            for (uint32_t pow = 1; pow < e; ++pow) {
-                for (std::size_t row = 0; row < M_rows.size(); ++row) {
-                    mpz_class dot = dot_row(M_rows[row], x_q);
-                    mpz_class tmp = (X_mp[row] - dot) / q_pow;
-                    Ax[row] = tmp % q;
-                }
-                MpzVector delta(k);
-                linSolve(M_rows, Ax, q, delta);
-
-                hensel_update(x_q, delta, q_pow);
-
-                q_pow *= q;
-            }
-        } else q_pow = q;
-
-        partial.push_back({std::move(x_q), q_pow});
-    }
-
-    const mpz_class modulus = std::accumulate(partial.begin(), partial.end(), mpz_class(1),
-                                               [](mpz_class a, const Part& p) { return a * p.mod; });
-
-    MpzVector L(k, 0);
-    MpzVector prefix(k, 1);
-
-    for (const Part& part : partial) garner_step(L, prefix, part.x, part.mod);
-    for (auto& v : L) mpz_mod(v.get_mpz_t(), v.get_mpz_t(), modulus.get_mpz_t());
-
-    U128Vector L_out(k);
-    for (std::size_t j = 0; j < k; ++j) L_out[j] = mpz_to_u128(L[j]);
-    return L_out;
-}
 #endif // LinBox/Givaro disabled

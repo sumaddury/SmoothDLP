@@ -220,7 +220,7 @@ u128 pow2mod(u128 base, unsigned bits, u128 n, u128 m_prime, u128 r2_m) {
 	
 }
 
-u128 powmod_odd(u128 base, unsigned e, u128 n, u128 n_prime, u128 r2) {
+u128 powmod_odd(u128 base, u128 e, u128 n, u128 n_prime, u128 r2) {
 	if (n == 1) return 0;
 
 	u128 b0 = base % n;

@@ -17,6 +17,8 @@
 #include <bitset>
 #include <random>
 
+namespace gauss {
+
 std::vector<uint32_t> full_primes_array;
 static constexpr uint32_t SIEVE_BOUND = 5'000'000;
 static constexpr uint32_t MAX_SMALL_PRIME = 1'000'000;
@@ -172,8 +174,8 @@ bool isPrime(u128 n) {
     return true;
 }
 
-std::pair<std::vector<std::pair<u128, uint32_t>>, u128> factorize_naive(u128 n) {
-    std::vector<std::pair<u128, uint32_t>> output;
+std::pair<FactorList, u128> factorize_naive(u128 n) {
+    FactorList output;
     output.reserve(128 - clz128(n == 0 ? 1 : n));
     using idx_t = std::vector<uint32_t>::size_type;
     idx_t start = 0, end = 0;
@@ -267,7 +269,7 @@ u128 squfof(u128 n_u128) {
     return 1;
 }
 
-std::vector<std::pair<u128, uint32_t>> factorize(u128 n) {
+FactorList factorize(u128 n) {
     std::map<u128, uint32_t> factors;
     auto trial = factorize_naive(n);
     auto& small = trial.first;
@@ -307,5 +309,7 @@ std::vector<std::pair<u128, uint32_t>> factorize(u128 n) {
         stack.push_back(m / f);
     }
 
-    return std::vector<std::pair<u128, uint32_t>>(factors.begin(), factors.end());
+    return FactorList(factors.begin(), factors.end());
 }
+
+} // namespace gauss

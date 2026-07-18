@@ -92,18 +92,18 @@ PYBIND11_MODULE(_core, m) {
     m.doc() = "";
 
     m.def("sieve_to", [](uint64_t n) {
-        std::vector<uint32_t> primes = sieveTo(n);
+        std::vector<uint32_t> primes = gauss::sieveTo(n);
         py::list out(primes.size());
         for (size_t i = 0; i < primes.size(); ++i) out[i] = py::int_(primes[i]);
         return out;
     }, py::arg("n"));
 
     m.def("is_prime", [](py::object o) {
-        return isPrime(pyint_to_u128(o));
+        return gauss::isPrime(pyint_to_u128(o));
     }, py::arg("n"));
 
     m.def("factorize", [](py::object o) {
-        auto vec = factorize(pyint_to_u128(o));
+        auto vec = gauss::factorize(pyint_to_u128(o));
         py::list out(vec.size());
         for (size_t i = 0; i < vec.size(); ++i) {
             out[i] = py::make_tuple(u128_to_pyint(vec[i].first), py::int_(vec[i].second));
@@ -112,7 +112,7 @@ PYBIND11_MODULE(_core, m) {
     }, py::arg("n"));
 
     m.def("factorize_naive", [](py::object o) {
-        auto result = factorize_naive(pyint_to_u128(o));
+        auto result = gauss::factorize_naive(pyint_to_u128(o));
         py::list out(result.first.size());
         for (size_t i = 0; i < result.first.size(); ++i) {
             out[i] = py::make_tuple(u128_to_pyint(result.first[i].first), py::int_(result.first[i].second));
@@ -121,42 +121,42 @@ PYBIND11_MODULE(_core, m) {
     }, py::arg("n"));
 
     m.def("squfof", [](py::object o) {
-        return u128_to_pyint(squfof(pyint_to_u128(o)));
+        return u128_to_pyint(gauss::squfof(pyint_to_u128(o)));
     }, py::arg("n"));
 
     m.def("is_smooth", [](py::object o, uint32_t y) {
-        return isSmooth(pyint_to_u128(o), y);
+        return salgo::isSmooth(pyint_to_u128(o), y);
     }, py::arg("x"), py::arg("y"));
 
     m.def("log_dickman", [](double u) {
-        return logDickman(u);
+        return salgo::logDickman(u);
     }, py::arg("u"));
 
     m.def("mp_ln", [](py::object o) {
-        return mp_ln(pyint_to_u128(o));
+        return salgo::mp_ln(pyint_to_u128(o));
     }, py::arg("x"));
 
     m.def("log_mul", [](py::object o, double log_rho) {
-        return u128_to_pyint(log_mul(pyint_to_u128(o), log_rho));
+        return u128_to_pyint(salgo::log_mul(pyint_to_u128(o), log_rho));
     }, py::arg("x"), py::arg("log_rho"));
 
     m.def("psi_approx", [](py::object o, uint64_t y) {
-        return u128_to_pyint(psiApprox(pyint_to_u128(o), y));
+        return u128_to_pyint(salgo::psiApprox(pyint_to_u128(o), y));
     }, py::arg("x"), py::arg("y"));
 
     m.def("build_product_tree", [](py::iterable level) {
-        return levels_to_pylist(buildProductTree(pylist_to_mpzvector(level)));
+        return levels_to_pylist(infra::buildProductTree(pylist_to_mpzvector(level)));
     }, py::arg("level"));
 
     m.def("smooth_candidates", [](py::iterable p_levels, py::iterable X) {
-        auto idx = smoothCandidates(pylist_to_levels(p_levels), pylist_to_u128vector(X));
+        auto idx = infra::smoothCandidates(pylist_to_levels(p_levels), pylist_to_u128vector(X));
         py::list out(idx.size());
         for (size_t i = 0; i < idx.size(); ++i) out[i] = py::int_(idx[i]);
         return out;
     }, py::arg("p_levels"), py::arg("X"));
 
     m.def("tree_factorize", [](py::iterable p_levels, py::object d) {
-        SparseList result = treeFactorize(pylist_to_levels(p_levels), pyint_to_u128(d));
+        SparseList result = infra::treeFactorize(pylist_to_levels(p_levels), pyint_to_u128(d));
         py::list out(result.size());
         for (size_t i = 0; i < result.size(); ++i)
             out[i] = py::make_tuple(py::int_(result[i].first), py::int_(result[i].second));

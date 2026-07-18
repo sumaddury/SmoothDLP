@@ -642,21 +642,21 @@ void test_pow2mod_matches_pow2mod_odd_for_odd_n() {
 // odd n and an arbitrary exponent e (unlike pow2mod_odd, e need not be a
 // power of two -- this does real square-and-multiply, not just repeated
 // squaring). n_prime = mont::inverse(n), r2 = mont::r_squared_mod_n(n),
-// same hoisting convention as pow2mod_odd. Note `e` is a plain `unsigned`
-// (32 bits), not u128 like every modulus/base in this file -- so this
-// currently cannot represent exponents needing more than 32 bits.
+// same hoisting convention as pow2mod_odd. `e` is u128, like every other
+// modulus/base in this file, so it can represent exponents up to the full
+// range needed for relation collection (e up to ~p, not just 32 bits).
 
-u128 powmod_oracle(u128 base, unsigned e, u128 n) {
+u128 powmod_oracle(u128 base, u128 e, u128 n) {
     mpz_class B = u128_to_mpz(base) % u128_to_mpz(n);
     mpz_class N = u128_to_mpz(n);
-    mpz_class E = e;
+    mpz_class E = u128_to_mpz(e);
     mpz_class P;
     mpz_powm(P.get_mpz_t(), B.get_mpz_t(), E.get_mpz_t(), N.get_mpz_t());
     return mpz_to_u128(P);
 }
 
 void test_powmod_odd_edge_cases() {
-    struct Case { u128 base; unsigned e; u128 n; };
+    struct Case { u128 base; u128 e; u128 n; };
     Case cases[] = {
         {5, 0, 97},                        // e=0: base^0 == 1 mod n
         {0, 0, 97},                        // base=0, e=0: 0^0 == 1 by convention
@@ -667,7 +667,9 @@ void test_powmod_odd_edge_cases() {
         {2, 10, 1024 * 1024 * 1024 + 7},   // not a power-of-two exponent
         {2, 1, 3},                         // smallest odd n > 1
         {U128_MAX - 2, 12345, U128_MAX},   // n odd, near 2^128
-        {7, 0xFFFFFFFFu, 97},              // e at the top of unsigned's range
+        {7, 0xFFFFFFFFu, 97},              // e at the top of the old 32-bit range
+        {U128_MAX - 2, U128_MAX - 5, U128_MAX},  // e itself near 2^128
+        {5, (u128)1 << 100, 97},                 // e with only a high bit set
     };
     for (auto& c : cases) {
         u128 n_prime = mont::inverse(c.n);
@@ -686,7 +688,7 @@ void test_powmod_odd_random() {
         u128 n_prime = mont::inverse(n);
         u128 r2 = mont::r_squared_mod_n(n);
         u128 base = random_u128();
-        unsigned e = (unsigned)rng(); // exercise the full unsigned range
+        u128 e = random_u128(); // exercise the full u128 range, not just 32 bits
         u128 got = mont::powmod_odd(base, e, n, n_prime, r2);
         u128 want = powmod_oracle(base, e, n);
         CHECK_EQ_U128(got, want, "powmod_odd random");
@@ -701,7 +703,7 @@ void test_powmod_odd_result_in_range() {
         u128 n_prime = mont::inverse(n);
         u128 r2 = mont::r_squared_mod_n(n);
         u128 base = random_u128();
-        unsigned e = (unsigned)rng();
+        u128 e = random_u128();
         u128 got = mont::powmod_odd(base, e, n, n_prime, r2);
         CHECK(got < n);
     }
@@ -719,10 +721,10 @@ void test_powmod_odd_matches_pow2mod_odd_for_power_of_two_e() {
         u128 n_prime = mont::inverse(n);
         u128 r2 = mont::r_squared_mod_n(n);
         u128 base = random_u128();
-        unsigned bits = (unsigned)(rng() % 32); // keep 2^bits within unsigned range
+        unsigned bits = (unsigned)(rng() % 127); // 2^bits fits u128 for bits in [0,127]
 
         u128 want = mont::pow2mod_odd(base, bits, n, n_prime, r2);
-        u128 got = mont::powmod_odd(base, (unsigned)1 << bits, n, n_prime, r2);
+        u128 got = mont::powmod_odd(base, (u128)1 << bits, n, n_prime, r2);
         CHECK_EQ_U128(got, want, "powmod_odd matches pow2mod_odd for e = 2^bits");
     }
 }
@@ -739,10 +741,11 @@ void test_powmod_odd_exponent_law() {
         u128 r2 = mont::r_squared_mod_n(n);
         u128 base = random_u128();
 
-        // Keep e1+e2 within unsigned range to avoid wraparound changing the
-        // mathematical exponent being compared.
-        unsigned e1 = (unsigned)(rng() % (1u << 20));
-        unsigned e2 = (unsigned)(rng() % (1u << 20));
+        // Keep e1+e2 within u128 range to avoid wraparound changing the
+        // mathematical exponent being compared (each capped at 63 bits, so
+        // the sum can't exceed ~2^64, far short of overflowing u128).
+        u128 e1 = random_u128_bits(63);
+        u128 e2 = random_u128_bits(63);
 
         u128 r1 = mont::powmod_odd(base, e1, n, n_prime, r2);
         u128 r2_val = mont::powmod_odd(base, e2, n, n_prime, r2);

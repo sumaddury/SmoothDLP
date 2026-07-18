@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <utility>
 
+namespace salgo {
+
 constexpr uint32_t Y_SMOOTHNESS_BOUND = 33'554'432;
 constexpr int DIGITS = 9;
 constexpr int NEWTON_TRIALS = 5;
@@ -57,20 +59,20 @@ static DickmanTableLoader _dickman_table_loader;
 bool isSmooth(u128 x, uint32_t y) {
     if (y > Y_SMOOTHNESS_BOUND) throw std::invalid_argument("isSmooth: y exceeds max bound");
     if (x <= y) return true;
-    if (isPrime(x)) return false;
+    if (gauss::isPrime(x)) return false;
 
     u128 rem = x;
-    auto it = std::upper_bound(full_primes_array.begin(), full_primes_array.end(), y);
-    size_t idx = it - full_primes_array.begin();
+    auto it = std::upper_bound(gauss::full_primes_array.begin(), gauss::full_primes_array.end(), y);
+    size_t idx = it - gauss::full_primes_array.begin();
     for (size_t i = 0; i < idx; ++i) {
-        uint32_t p = full_primes_array[i];
+        uint32_t p = gauss::full_primes_array[i];
         if (rem % p != 0) continue;
         do {
             rem /= p;
         } while (rem % p == 0);
         if (rem <= y) return true;
         if (rem < (u128)p * p) return rem == 1;
-        if (isPrime(rem)) return false;
+        if (gauss::isPrime(rem)) return false;
     }
     return rem == 1;
 }
@@ -155,3 +157,5 @@ u128 psiApprox(u128 x, uint64_t y) {
     double log_rho = logDickman(u);
     return log_mul(x, log_rho);
 }
+
+} // namespace salgo

@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+using namespace gauss;
+
 namespace {
 
 int g_checks = 0;

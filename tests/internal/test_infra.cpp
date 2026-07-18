@@ -12,6 +12,7 @@
 // build command (`make -C tests/internal test`).
 
 #include "infra.h"
+#include "montgomery.h"
 #include "types.h"
 
 #include <gmpxx.h>
@@ -23,6 +24,8 @@
 #include <random>
 #include <string>
 #include <vector>
+
+using namespace infra;
 
 namespace {
 
@@ -210,6 +213,71 @@ void test_tree_factorize_randomized_reconstruction() {
     }
 }
 
+// ---- infra::addRelations -------------------------------------------------
+//
+// Contract: addRelations(base, params, M, X) grows M/X by relation batches
+// (random t in [0, p-2], base^t mod p, kept iff B-smooth over
+// params.p_levels) until at least k = params.p_levels[0].size() new rows
+// have been added. Each new row of M is that relation's sparse
+// factorization; the matching entry appended to X is the exponent t that
+// produced it -- NOT the smooth value itself -- since X is the right-hand
+// side of the M*L === X (mod p-1) system the rest of the pipeline solves
+// for base's discrete logs. That's the specific thing these tests verify:
+// every (M[i], X[i]) pair must satisfy reconstruct(M[i]) == base^X[i] mod p.
+
+ProblemParams make_params(u128 p, u128 mask, int mask_bitlength, u128 B,
+                           double smooth_density, const std::vector<MpzVector>& levels) {
+    return ProblemParams{p, mont::inverse(p), mont::r_squared_mod_n(p), mask, B,
+                          smooth_density, levels, mask_bitlength};
+}
+
+void test_add_relations_reaches_factor_base_size_and_reconstructs() {
+    // p = 47: every residue mod p is < 47, so it's automatically fully
+    // smooth over a base containing every prime <= 47 -- a single batch of
+    // exactly k relations always suffices, deterministically (no flakiness
+    // from addRelations' internal random_device-seeded draws).
+    auto levels = buildProductTree(factor_base_mpz());
+    const size_t k = kSmallFactorBase.size();
+    u128 p = 47, base = 5;
+    ProblemParams params = make_params(p, 63, 6, 47, 1.0, levels);
+
+    std::vector<SparseList> M;
+    U128Vector X;
+    addRelations(base, params, M, X);
+
+    CHECK(M.size() == k);
+    CHECK(X.size() == k);
+    for (size_t i = 0; i < M.size(); ++i) {
+        u128 want = mont::powmod_odd(base, X[i], params.p, params.p_prime, params.r2);
+        CHECK(reconstruct(M[i]) == want);
+    }
+}
+
+void test_add_relations_partial_density_still_reconstructs() {
+    // A realistic case where not every candidate is smooth (p is far larger
+    // than the factor base's top prime), and smooth_density is deliberately
+    // set well above the true rate, so batches under-deliver and multiple
+    // rounds are the likely path -- exactly the loop iteration this routine
+    // needs to get right. Regardless of how many rounds it actually takes,
+    // every relation produced must still be internally consistent.
+    auto levels = buildProductTree(factor_base_mpz());
+    const size_t k = kSmallFactorBase.size();
+    u128 p = 1009, base = 2;
+    ProblemParams params = make_params(p, 1023, 10, 47, 0.05, levels);
+
+    std::vector<SparseList> M;
+    U128Vector X;
+    addRelations(base, params, M, X);
+
+    CHECK(M.size() == X.size());
+    CHECK(M.size() >= k);
+    for (size_t i = 0; i < M.size(); ++i) {
+        CHECK(X[i] <= params.p - 2);
+        u128 want = mont::powmod_odd(base, X[i], params.p, params.p_prime, params.r2);
+        CHECK(reconstruct(M[i]) == want);
+    }
+}
+
 struct TestCase {
     const char* name;
     void (*fn)();
@@ -228,6 +296,8 @@ int main() {
         {"smooth_candidates_single_prime_candidates", test_smooth_candidates_single_prime_candidates},
         {"tree_factorize_known_composite", test_tree_factorize_known_composite},
         {"tree_factorize_randomized_reconstruction", test_tree_factorize_randomized_reconstruction},
+        {"add_relations_reaches_factor_base_size_and_reconstructs", test_add_relations_reaches_factor_base_size_and_reconstructs},
+        {"add_relations_partial_density_still_reconstructs", test_add_relations_partial_density_still_reconstructs},
     };
 
     for (auto& t : tests) {

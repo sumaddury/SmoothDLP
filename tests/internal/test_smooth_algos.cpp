@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+using namespace salgo;
+
 namespace {
 
 int g_checks = 0;
