@@ -55,7 +55,17 @@ SMOOTH_BIN := test_smooth_algos
 #   -D_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION, for LinBox's use of
 #     the removed std::unary_function/binary_function
 # setup.py passes the same two flags for the same reasons.
-LIN_ALG_SRC   := test_lin_alg.cpp $(SRCDIR)/lin_alg.cpp
+#
+# This is a unity build -- test_lin_alg.cpp #includes lin_alg.cpp directly
+# rather than compiling it as a second translation unit linked in. LinBox's
+# commentator/args-parser machinery is pulled in transitively by even the
+# base matrix/vector headers lin_alg.h needs, and defines several symbols
+# out-of-line without `inline` in this LinBox build -- so two TUs that both
+# include lin_alg.h and get linked together hit ~60 duplicate-symbol errors
+# at link time. A single TU sidesteps that entirely. lin_alg.cpp is still
+# listed as a prerequisite below so `make` rebuilds when it changes, even
+# though it's not passed to the compiler as its own source argument.
+LIN_ALG_SRC   := test_lin_alg.cpp
 LIN_ALG_BIN   := test_lin_alg
 LIN_ALG_FLAGS := -std=c++17 -O2 -g -Wall -Wextra \
                  -I$(SRCDIR) -isystem $(CONDA_PREFIX)/include \
@@ -79,7 +89,7 @@ $(GAUSS_BIN): $(GAUSS_SRC) $(SRCDIR)/gauss_dream.h $(SRCDIR)/types.h $(SRCDIR)/m
 $(SMOOTH_BIN): $(SMOOTH_SRC) $(SRCDIR)/smooth_algos.h $(SRCDIR)/gauss_dream.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h
 	$(CXX) $(CXXFLAGS) $(SMOOTH_SRC) -o $(SMOOTH_BIN) $(LDFLAGS) $(LIBS)
 
-$(LIN_ALG_BIN): $(LIN_ALG_SRC) $(SRCDIR)/lin_alg.h $(SRCDIR)/types.h
+$(LIN_ALG_BIN): $(LIN_ALG_SRC) $(SRCDIR)/lin_alg.cpp $(SRCDIR)/lin_alg.h $(SRCDIR)/types.h
 	$(CXX) $(LIN_ALG_FLAGS) $(LIN_ALG_SRC) -o $(LIN_ALG_BIN) $(LDFLAGS) $(LIN_ALG_LIBS)
 
 test: $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN)

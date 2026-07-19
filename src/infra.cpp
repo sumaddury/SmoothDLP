@@ -200,7 +200,7 @@ ProblemParams::ProblemParams(u128 p) :
   // its log.
   smooth_density(std::exp(salgo::logDickman(salgo::mp_ln(p) / salgo::mp_ln(B)))),
   p_levels(productTreeForBound(B)),
-  p_factorization(gauss::factorize(p)) {}
+  p_factorization(gauss::factorize(p - 1)) {}
 
 void addRelations(
     u128 base,

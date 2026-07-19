@@ -1,21 +1,33 @@
-// Standalone correctness tests for src/lin_alg.{h,cpp}: solveModPrime and
-// rankModPrime, the LinBox-backed sparse solve of M*L === X (mod q).
+// Standalone correctness tests for src/lin_alg.{h,cpp}: solveModPrime,
+// rankModPrime, and henselLift -- the LinBox-backed sparse solve of
+// M*L === X (mod q), and its Hensel-lifted extension to mod q^e.
 //
 // Unlike the other suites in this directory, this one DOES link LinBox,
 // Givaro, NTL and FFLAS-FFPACK -- it is the only part of the project that
-// touches them. See the Makefile in this directory for the exact build
-// command (`make -C tests/internal test`).
+// touches them. This file is compiled as a unity build (it #includes
+// lin_alg.cpp directly, see the include below and the Makefile) rather than
+// being linked against a separately-compiled lin_alg.cpp: LinBox's
+// commentator/args-parser machinery is pulled in transitively by even the
+// base matrix/vector headers in lin_alg.h and defines several symbols
+// out-of-line without `inline` (confirmed directly in this LinBox build's
+// commentator.inl), so any two translation units that both include
+// lin_alg.h and get linked together hit ~60 duplicate-symbol errors. A
+// single translation unit sidesteps that entirely, and as a side benefit
+// lets this file call lin_alg.cpp's private (anonymous-namespace) helpers
+// -- fillMatrix, fillVector, getVector -- directly, which is exactly what's
+// needed to build Matrix/Vector fixtures for solveModPrime's raw interface.
 //
 // Systems are built by planting a known solution L_true, forming
-// X = M*L_true (mod q), and then checking what comes back. Two distinct
-// properties are checked throughout, and they are NOT the same thing:
+// X = M*L_true (as an unreduced integer, not mod q -- see buildSystem), and
+// checking what comes back. Two distinct properties are checked throughout,
+// and they are NOT the same thing:
 //   * the returned L satisfies every row (checked here via unsatisfiedRows), and
 //   * the returned L equals L_true coordinate-for-coordinate.
 // The first always holds for a consistent system; the second holds only for
 // coordinates that are uniquely determined, which is exactly the
 // partial-rank behaviour the double-index-calculus driver depends on.
 
-#include "lin_alg.h"
+#include "../../src/lin_alg.cpp"
 #include "types.h"
 
 #include <cstdint>
@@ -52,16 +64,10 @@ std::mt19937_64 rng(0xC0FFEEULL);
   job of pinning that the configuration really is correct belongs to this
   file, and this helper is how it does it.
 
-  It is not idle paranoia here: the field lin_alg deliberately avoids
-  (Modular<uint64_t,__uint128_t>) returns success with a vector failing 1 of
-  5 rows at q=2^33 and 3 of 5 at q=2^64-59, so this is exactly the check
-  that would catch anyone swapping the field out.
-
-  Arithmetic stays exact in u128: both factors are reduced below
-  q <= 2^64-1, so their product is at most (2^64-1)^2, below 2^128.
-  Repeated column indices in a row are summed, matching how lin_alg builds
-  the matrix. Any modulus works -- q need not be prime, since this only
-  multiplies and compares.
+  q need not be prime here -- this only multiplies and compares, so it also
+  works to check a Hensel-lifted L against q^e directly, a composite modulus
+  where "solve" would be meaningless but "does this L satisfy every row"
+  still isn't.
 */
 std::vector<size_t> unsatisfiedRows(const RelationMatrix& M, const U128Vector& X,
                                     const U128Vector& L, u128 q) {
@@ -130,11 +136,57 @@ System buildSystem(size_t m, size_t n, int weight, u128 q) {
     return s;
 }
 
-bool matchesPlanted(const SolveResult& r, const U128Vector& L_true) {
-    if (r.L.size() != L_true.size()) return false;
-    for (size_t j = 0; j < L_true.size(); ++j)
-        if (r.L[j] != L_true[j]) return false;
-    return true;
+/**
+  Builds an m x n sparse system the same way as buildSystem, but plants
+  L_true mod q^e (not mod q) and sets X to the reduced-mod-q^e sum -- the
+  shape henselLift's tests need, since that function's whole contract is
+  about recovering a solution at a modulus larger than the base field q.
+*/
+System buildSystemModQe(size_t m, size_t n, int weight, u128 q, u128 q_to_e) {
+    System s;
+    s.M.assign(m, SparseList{});
+    for (size_t i = 0; i < m; ++i) {
+        s.M[i].push_back({(i * 7) % n, (uint32_t)(1 + rng() % 1000)});
+        for (int k = 0; k < weight; ++k)
+            s.M[i].push_back({rng() % n, (uint32_t)(1 + rng() % 1000)});
+    }
+    s.L_true.resize(n);
+    for (size_t j = 0; j < n; ++j) s.L_true[j] = randomBelow(q_to_e);
+    s.X.assign(m, 0);
+    for (size_t i = 0; i < m; ++i) {
+        u128 acc = 0;
+        for (const auto& e : s.M[i])
+            acc = (acc + ((u128)e.second % q_to_e) * s.L_true[e.first]) % q_to_e;
+        s.X[i] = acc;
+    }
+    (void)q;
+    return s;
+}
+
+/**
+  Builds a LinBox Matrix/Vector pair from a System via lin_alg's own private
+  fillMatrix/fillVector (reachable here because this file is a unity build,
+  see the top-of-file comment), and calls solveModPrime -- this is the
+  raw-interface round trip any real caller (or henselLift itself) goes
+  through, so testing through it rather than around it is the point.
+*/
+SolveStatus solveViaRaw(const RelationMatrix& M, const U128Vector& X, size_t n_cols, u128 q,
+                        U128Vector& L_out, Method method = Method::SparseElimination) {
+    if (q < 2 || q > MAX_MODULUS) return SolveStatus::MODULUS_TOO_LARGE;
+    if (n_cols == 0 || M.empty() || !dimensionsValid(M, n_cols, &X))
+        return SolveStatus::BAD_DIMENSIONS;
+
+    const Field F = makeField(q);
+    Matrix A(F, M.size(), n_cols);
+    fillMatrix(A, F, M, q);
+
+    Vector b(F, X.size());
+    fillVector(b, F, X, q);
+
+    Vector x(F, n_cols);
+    SolveStatus st = solveModPrime(A, x, b, q, method);
+    if (st == SolveStatus::OK) L_out = getVector(F, x);
+    return st;
 }
 
 // ---- solveModPrime: basic correctness ---------------------------------------
@@ -144,10 +196,11 @@ bool matchesPlanted(const SolveResult& r, const U128Vector& L_true) {
 
 void test_solve_recovers_planted_solution_small_prime() {
     System s = buildSystem(40, 20, 3, P_SMALL);
-    SolveResult r = solveModPrime(s.M, s.X, 20, P_SMALL);
-    CHECK(r.status == SolveStatus::OK);
-    CHECK(unsatisfiedRows(s.M, s.X, r.L, P_SMALL).empty());
-    CHECK(matchesPlanted(r, s.L_true));
+    U128Vector L;
+    SolveStatus st = solveViaRaw(s.M, s.X, 20, P_SMALL, L);
+    CHECK(st == SolveStatus::OK);
+    CHECK(unsatisfiedRows(s.M, s.X, L, P_SMALL).empty());
+    CHECK(L == s.L_true);
 }
 
 // The whole point of the field choice in lin_alg.cpp. Every one of these
@@ -157,10 +210,11 @@ void test_solve_is_correct_across_prime_sizes() {
     const u128 primes[] = {P_SMALL, P_2_31, P_2_33, P_2_40, P_2_63, P_2_64};
     for (u128 q : primes) {
         System s = buildSystem(60, 30, 3, q);
-        SolveResult r = solveModPrime(s.M, s.X, 30, q);
-        CHECK(r.status == SolveStatus::OK);
-        CHECK(unsatisfiedRows(s.M, s.X, r.L, q).empty());
-        CHECK(matchesPlanted(r, s.L_true));
+        U128Vector L;
+        SolveStatus st = solveViaRaw(s.M, s.X, 30, q, L);
+        CHECK(st == SolveStatus::OK);
+        CHECK(unsatisfiedRows(s.M, s.X, L, q).empty());
+        CHECK(L == s.L_true);
     }
 }
 
@@ -169,9 +223,10 @@ void test_solve_randomized_full_rank_systems() {
         size_t n = 10 + rng() % 40;
         size_t m = n + 10 + rng() % 30;          // overdetermined
         System s = buildSystem(m, n, 3, P_2_64);
-        SolveResult r = solveModPrime(s.M, s.X, n, P_2_64);
-        CHECK(r.status == SolveStatus::OK);
-        CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
+        U128Vector L;
+        SolveStatus st = solveViaRaw(s.M, s.X, n, P_2_64, L);
+        CHECK(st == SolveStatus::OK);
+        CHECK(unsatisfiedRows(s.M, s.X, L, P_2_64).empty());
     }
 }
 
@@ -179,22 +234,24 @@ void test_solve_randomized_full_rank_systems() {
 // work, and with enough independent rows the solution is pinned exactly.
 void test_solve_handles_rectangular_overdetermined() {
     System s = buildSystem(300, 100, 4, P_2_64);
-    SolveResult r = solveModPrime(s.M, s.X, 100, P_2_64);
-    CHECK(r.status == SolveStatus::OK);
-    CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
-    CHECK(matchesPlanted(r, s.L_true));
+    U128Vector L;
+    SolveStatus st = solveViaRaw(s.M, s.X, 100, P_2_64, L);
+    CHECK(st == SolveStatus::OK);
+    CHECK(unsatisfiedRows(s.M, s.X, L, P_2_64).empty());
+    CHECK(L == s.L_true);
 }
 
 // X entries arriving unreduced (they are exponents mod p-1, not mod q)
 // must give the same answer as pre-reduced ones.
 void test_solve_reduces_unreduced_rhs() {
     System s = buildSystem(40, 20, 3, P_2_40);
-    SolveResult a = solveModPrime(s.M, s.X, 20, P_2_40);
+    U128Vector a, b;
+    SolveStatus sta = solveViaRaw(s.M, s.X, 20, P_2_40, a);
     for (size_t i = 0; i < s.X.size(); ++i) s.X[i] += P_2_40 * (1 + (i % 3));
-    SolveResult b = solveModPrime(s.M, s.X, 20, P_2_40);
-    CHECK(a.status == SolveStatus::OK);
-    CHECK(b.status == SolveStatus::OK);
-    CHECK(a.L == b.L);
+    SolveStatus stb = solveViaRaw(s.M, s.X, 20, P_2_40, b);
+    CHECK(sta == SolveStatus::OK);
+    CHECK(stb == SolveStatus::OK);
+    CHECK(a == b);
 }
 
 // Repeated column indices in one row must be summed, not overwritten.
@@ -216,17 +273,19 @@ void test_duplicate_column_entries_are_summed() {
         for (const auto& e : M[i]) acc = (acc + ((u128)e.second % q) * L_true[e.first]) % q;
         X[i] = acc;
     }
-    SolveResult r = solveModPrime(M, X, 2, q);
-    CHECK(r.status == SolveStatus::OK);
-    CHECK(unsatisfiedRows(M, X, r.L, q).empty());
-    CHECK(r.L.size() == 2 && r.L[0] == 11 && r.L[1] == 23);
+    U128Vector L;
+    SolveStatus st = solveViaRaw(M, X, 2, q, L);
+    CHECK(st == SolveStatus::OK);
+    CHECK(unsatisfiedRows(M, X, L, q).empty());
+    CHECK(L.size() == 2 && L[0] == 11 && L[1] == 23);
 
     // An explicitly pre-summed row must give the identical answer.
     RelationMatrix M2 = M;
     M2[0] = {{0, 9}, {1, 7}};
-    SolveResult r2 = solveModPrime(M2, X, 2, q);
-    CHECK(r2.status == SolveStatus::OK);
-    CHECK(r2.L == r.L);
+    U128Vector L2;
+    SolveStatus st2 = solveViaRaw(M2, X, 2, q, L2);
+    CHECK(st2 == SolveStatus::OK);
+    CHECK(L2 == L);
 }
 
 // ---- unsatisfiedRows: the checker itself ------------------------------------
@@ -236,11 +295,6 @@ void test_duplicate_column_entries_are_summed() {
 // nothing -- which would silently disarm the one guard standing between a
 // wrong LinBox result and the rest of the project. These tests drive it in
 // the detecting direction, with solutions deliberately corrupted.
-//
-// This matters concretely: the field this module avoids
-// (Modular<uint64_t,__uint128_t>) really does return status OK with a vector
-// that fails 1-3 rows of a 5x5 system once q exceeds 2^32. A checker that
-// cannot detect that is worthless.
 
 void test_unsatisfied_rows_detects_a_corrupted_solution() {
     const u128 q = P_2_64;
@@ -296,8 +350,8 @@ void test_unsatisfied_rows_rejects_malformed_input() {
 }
 
 // The checker is also the tool for verifying solutions this module did not
-// produce -- a lifted L mod q^e, or a recombined L mod p-1 -- so it must
-// work for a composite modulus too, where "solve" would be meaningless.
+// produce directly -- a lifted L mod q^e, or a recombined L mod p-1 -- so it
+// must work for a composite modulus too, where "solve" would be meaningless.
 void test_unsatisfied_rows_works_for_composite_modulus() {
     const u128 mod = 1012;                     // 2^2 * 11 * 23, a real p-1
     RelationMatrix M = { {{1,1}}, {{2,3}}, {{0,1},{3,1}} };
@@ -349,20 +403,21 @@ void test_solve_partial_rank_locks_determined_coordinates() {
 
     CHECK(rankModPrime(s.M, n, P_2_64) == n - 1);
 
-    SolveResult r = solveModPrime(s.M, s.X, n, P_2_64);
-    CHECK(r.status == SolveStatus::OK);
-    CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());   // still a genuine solution
+    U128Vector L;
+    SolveStatus st = solveViaRaw(s.M, s.X, n, P_2_64, L);
+    CHECK(st == SolveStatus::OK);
+    CHECK(unsatisfiedRows(s.M, s.X, L, P_2_64).empty());   // still a genuine solution
 
     // Every coordinate outside the kernel must be exactly the planted value;
     // only src/dup are permitted to differ.
     for (size_t j = 0; j < n; ++j) {
         if (j == src || j == dup) continue;
-        CHECK(r.L[j] == s.L_true[j]);
+        CHECK(L[j] == s.L_true[j]);
     }
     // ...and the kernel direction must be respected: L[src]+L[dup] is the
     // invariant, since the two columns are identical.
     u128 planted_sum = (s.L_true[src] + s.L_true[dup]) % P_2_64;
-    u128 got_sum     = (r.L[src] + r.L[dup]) % P_2_64;
+    u128 got_sum     = (L[src] + L[dup]) % P_2_64;
     CHECK(planted_sum == got_sum);
 }
 
@@ -405,23 +460,25 @@ void test_rank_depends_on_the_modulus() {
 
 void test_wiedemann_solves_square_systems() {
     System s = buildSystem(60, 60, 4, P_2_64);
-    SolveResult r = solveModPrime(s.M, s.X, 60, P_2_64, Method::Wiedemann);
-    if (r.status == SolveStatus::OK) {
-        CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
+    U128Vector L;
+    SolveStatus st = solveViaRaw(s.M, s.X, 60, P_2_64, L, Method::Wiedemann);
+    if (st == SolveStatus::OK) {
+        CHECK(unsatisfiedRows(s.M, s.X, L, P_2_64).empty());
     } else {
         // Wiedemann is randomized and may report failure on an unlucky
         // draw; what it must never do is return OK with a bad vector.
-        CHECK(r.status == SolveStatus::FAILED || r.status == SolveStatus::INCONSISTENT);
+        CHECK(st == SolveStatus::FAILED || st == SolveStatus::INCONSISTENT);
     }
 }
 
 void test_wiedemann_and_elimination_agree_on_row_satisfaction() {
     System s = buildSystem(50, 50, 4, P_2_40);
-    SolveResult a = solveModPrime(s.M, s.X, 50, P_2_40, Method::SparseElimination);
-    SolveResult b = solveModPrime(s.M, s.X, 50, P_2_40, Method::Wiedemann);
-    CHECK(a.status == SolveStatus::OK);
-    CHECK(unsatisfiedRows(s.M, s.X, a.L, P_2_40).empty());
-    if (b.status == SolveStatus::OK) CHECK(unsatisfiedRows(s.M, s.X, b.L, P_2_40).empty());
+    U128Vector a, b;
+    SolveStatus sta = solveViaRaw(s.M, s.X, 50, P_2_40, a, Method::SparseElimination);
+    SolveStatus stb = solveViaRaw(s.M, s.X, 50, P_2_40, b, Method::Wiedemann);
+    CHECK(sta == SolveStatus::OK);
+    CHECK(unsatisfiedRows(s.M, s.X, a, P_2_40).empty());
+    if (stb == SolveStatus::OK) CHECK(unsatisfiedRows(s.M, s.X, b, P_2_40).empty());
 }
 
 // ---- Inconsistent systems ---------------------------------------------------
@@ -434,11 +491,12 @@ void test_inconsistent_system_is_not_silently_accepted() {
     System s = buildSystem(30, 15, 3, P_2_64);
     s.M.push_back(s.M[0]);                       // duplicate a row...
     s.X.push_back((s.X[0] + 1) % P_2_64);        // ...with a different RHS
-    SolveResult r = solveModPrime(s.M, s.X, 15, P_2_64);
-    if (r.status == SolveStatus::OK) {
-        CHECK(!unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
+    U128Vector L;
+    SolveStatus st = solveViaRaw(s.M, s.X, 15, P_2_64, L);
+    if (st == SolveStatus::OK) {
+        CHECK(!unsatisfiedRows(s.M, s.X, L, P_2_64).empty());
     } else {
-        CHECK(r.status == SolveStatus::INCONSISTENT || r.status == SolveStatus::FAILED);
+        CHECK(st == SolveStatus::INCONSISTENT || st == SolveStatus::FAILED);
     }
 }
 
@@ -450,8 +508,8 @@ void test_inconsistent_system_is_not_silently_accepted() {
 void test_rejects_modulus_above_supported_range() {
     System s = buildSystem(10, 5, 2, P_SMALL);
     u128 too_big = MAX_MODULUS + 1;              // 2^64, one past the limit
-    SolveResult r = solveModPrime(s.M, s.X, 5, too_big);
-    CHECK(r.status == SolveStatus::MODULUS_TOO_LARGE);
+    U128Vector L;
+    CHECK(solveViaRaw(s.M, s.X, 5, too_big, L) == SolveStatus::MODULUS_TOO_LARGE);
     CHECK(rankModPrime(s.M, 5, too_big) == SIZE_MAX);
 }
 
@@ -459,46 +517,133 @@ void test_accepts_modulus_at_the_top_of_the_range() {
     // 2^64-59 is the largest prime that fits; it must be accepted, so the
     // bound check is off-by-one-free at the end that matters.
     System s = buildSystem(20, 10, 3, P_2_64);
-    SolveResult r = solveModPrime(s.M, s.X, 10, P_2_64);
-    CHECK(r.status == SolveStatus::OK);
+    U128Vector L;
+    CHECK(solveViaRaw(s.M, s.X, 10, P_2_64, L) == SolveStatus::OK);
 }
 
 void test_rejects_out_of_range_column_index() {
     System s = buildSystem(10, 5, 2, P_SMALL);
     s.M[0].push_back({99, 3});                   // column 99 with n_cols == 5
-    SolveResult r = solveModPrime(s.M, s.X, 5, P_SMALL);
-    CHECK(r.status == SolveStatus::BAD_DIMENSIONS);
+    U128Vector L;
+    CHECK(solveViaRaw(s.M, s.X, 5, P_SMALL, L) == SolveStatus::BAD_DIMENSIONS);
     CHECK(rankModPrime(s.M, 5, P_SMALL) == SIZE_MAX);
 }
 
 void test_rejects_rhs_length_mismatch() {
     System s = buildSystem(10, 5, 2, P_SMALL);
     s.X.pop_back();
-    SolveResult r = solveModPrime(s.M, s.X, 5, P_SMALL);
-    CHECK(r.status == SolveStatus::BAD_DIMENSIONS);
+    U128Vector L;
+    CHECK(solveViaRaw(s.M, s.X, 5, P_SMALL, L) == SolveStatus::BAD_DIMENSIONS);
 }
 
 void test_rejects_empty_inputs() {
     RelationMatrix empty_M;
     U128Vector empty_X;
-    CHECK(solveModPrime(empty_M, empty_X, 5, P_SMALL).status == SolveStatus::BAD_DIMENSIONS);
+    U128Vector L;
+    CHECK(solveViaRaw(empty_M, empty_X, 5, P_SMALL, L) == SolveStatus::BAD_DIMENSIONS);
     System s = buildSystem(10, 5, 2, P_SMALL);
-    CHECK(solveModPrime(s.M, s.X, 0, P_SMALL).status == SolveStatus::BAD_DIMENSIONS);
+    CHECK(solveViaRaw(s.M, s.X, 0, P_SMALL, L) == SolveStatus::BAD_DIMENSIONS);
 }
 
 // ---- Non-mutation -----------------------------------------------------------
 //
-// Contract: LinBox's solve consumes the matrix it is given, so lin_alg must
-// copy internally and leave the caller's inputs untouched.
+// Contract: solveModPrime's A is not modified -- LinBox's solve() dispatch
+// copies internally before any destructive elimination step (see lin_alg.h).
+// A real caller reuses the same A across many solves (the whole point of
+// the raw interface), so this is checked directly: build A once, solve
+// against two different b's, then solve a THIRD time against the original b
+// again and confirm it's identical to the first result.
 
-void test_caller_inputs_are_not_modified() {
+void test_matrix_A_is_not_mutated_across_repeated_solves() {
     System s = buildSystem(40, 20, 3, P_2_64);
-    RelationMatrix M_before = s.M;
-    U128Vector X_before = s.X;
-    solveModPrime(s.M, s.X, 20, P_2_64);
-    rankModPrime(s.M, 20, P_2_64);
-    CHECK(s.M == M_before);
-    CHECK(s.X == X_before);
+    const Field F = makeField(P_2_64);
+    Matrix A(F, s.M.size(), 20);
+    fillMatrix(A, F, s.M, P_2_64);
+
+    Vector b1(F, s.X.size());
+    fillVector(b1, F, s.X, P_2_64);
+
+    // b2 must be a second CONSISTENT right-hand side for the same M -- an
+    // arbitrary random b2 is generically inconsistent for an overdetermined
+    // system (M has rank <= 20 out of 40 rows), which would make the second
+    // solve legitimately fail and isn't what this test is checking.
+    U128Vector L_true2(20);
+    for (size_t j = 0; j < 20; ++j) L_true2[j] = randomBelow(P_2_64);
+    U128Vector X2(s.M.size(), 0);
+    for (size_t i = 0; i < s.M.size(); ++i) {
+        u128 acc = 0;
+        for (const auto& e : s.M[i]) acc = (acc + ((u128)e.second % P_2_64) * L_true2[e.first]) % P_2_64;
+        X2[i] = acc;
+    }
+    Vector b2(F, X2.size());
+    fillVector(b2, F, X2, P_2_64);
+
+    Vector x1(F, 20), x2(F, 20), x3(F, 20);
+    CHECK(solveModPrime(A, x1, b1, P_2_64) == SolveStatus::OK);
+    CHECK(solveModPrime(A, x2, b2, P_2_64) == SolveStatus::OK);
+    CHECK(solveModPrime(A, x3, b1, P_2_64) == SolveStatus::OK);
+
+    U128Vector L1 = getVector(F, x1);
+    U128Vector L3 = getVector(F, x3);
+    CHECK(L1 == L3);
+    CHECK(unsatisfiedRows(s.M, s.X, L1, P_2_64).empty());
+}
+
+// ---- henselLift --------------------------------------------------------------
+//
+// Contract: lifts a base solution of M*L === X (mod q) to a solution mod
+// q^e. The residual step (X - M*L_i)/q^i is exact-integer arithmetic (see
+// lin_alg.h's doc), which is only correct if it's done with SIGNED
+// semantics -- X[i] and M*L_i are each bounded, but nothing forces
+// M*L_i <= X[i], so an implementation using unsigned subtraction can
+// silently wrap around. These tests check the actual mod-q^e result via
+// unsatisfiedRows (composite-modulus-safe, per its own doc above), not by
+// assuming the arithmetic is right.
+
+void test_hensel_lift_full_rank_two_levels() {
+    // A hand-checkable system: row0 pins L0 directly, row1 pins L0+L1.
+    // q=3, e=3 (target modulus 27). Planted so that the true L1 is large
+    // (24) while X[1] is a small raw integer (2) -- i.e. M*L grows past X
+    // as the lift proceeds, which is the natural case, not a contrived one.
+    const u128 q = 3;
+    const int e = 3;
+    const u128 q_to_e = 27;
+    RelationMatrix M = { {{0, 1}}, {{0, 1}, {1, 1}} };
+    U128Vector X = {5, 2};
+    U128Vector L_true = {5, 24};   // 5 + 24 = 29 === 2 (mod 27)
+    CHECK(unsatisfiedRows(M, X, L_true, q_to_e).empty());   // sanity-check the planted system itself
+
+    U128Vector L = henselLift(M, X, 2, q, e);
+    CHECK(unsatisfiedRows(M, X, L, q_to_e).empty());
+    CHECK(L == L_true);
+}
+
+void test_hensel_lift_matches_planted_solution_randomized() {
+    for (int iter = 0; iter < 10; ++iter) {
+        const u128 q = 3;
+        const int e = 4;
+        u128 q_to_e = 1;
+        for (int i = 0; i < e; ++i) q_to_e *= q;   // 81
+
+        size_t n = 5 + rng() % 10;
+        size_t m = n + 5;
+        System s = buildSystemModQe(m, n, 3, q, q_to_e);
+
+        U128Vector L = henselLift(s.M, s.X, n, q, e);
+        CHECK(unsatisfiedRows(s.M, s.X, L, q_to_e).empty());
+    }
+}
+
+void test_hensel_lift_single_level_matches_base_solve() {
+    // e == 1 means no lifting at all -- the result should be exactly the
+    // base solveModPrime call's answer, mod q.
+    const u128 q = P_SMALL;
+    System s = buildSystem(30, 15, 3, q);
+    U128Vector base;
+    CHECK(solveViaRaw(s.M, s.X, 15, q, base) == SolveStatus::OK);
+
+    U128Vector lifted = henselLift(s.M, s.X, 15, q, 1);
+    CHECK(lifted == base);
 }
 
 struct TestCase {
@@ -532,7 +677,10 @@ int main() {
         {"rejects_out_of_range_column_index", test_rejects_out_of_range_column_index},
         {"rejects_rhs_length_mismatch", test_rejects_rhs_length_mismatch},
         {"rejects_empty_inputs", test_rejects_empty_inputs},
-        {"caller_inputs_are_not_modified", test_caller_inputs_are_not_modified},
+        {"matrix_A_is_not_mutated_across_repeated_solves", test_matrix_A_is_not_mutated_across_repeated_solves},
+        {"hensel_lift_full_rank_two_levels", test_hensel_lift_full_rank_two_levels},
+        {"hensel_lift_matches_planted_solution_randomized", test_hensel_lift_matches_planted_solution_randomized},
+        {"hensel_lift_single_level_matches_base_solve", test_hensel_lift_single_level_matches_base_solve},
     };
 
     for (auto& t : tests) {

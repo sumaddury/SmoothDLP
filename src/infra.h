@@ -79,8 +79,6 @@ void addRelations(
     const ProblemParams& params,
     RelationMatrix& M,
     U128Vector& X);
-
-
-
+  
 
 } // namespace infra

@@ -17,3 +17,7 @@ tests/internal/test_smooth_algos
 tests/internal/*.dSYM
 tests/internal/*.o
 notebooks/
+
+# emacs autosave (#file#) and lock (.#file) files
+#*#
+.#*
