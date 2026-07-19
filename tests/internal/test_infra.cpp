@@ -13,6 +13,7 @@
 
 #include "infra.h"
 #include "montgomery.h"
+#include "gauss_dream.h"
 #include "types.h"
 
 #include <gmpxx.h>
@@ -213,6 +214,71 @@ void test_tree_factorize_randomized_reconstruction() {
     }
 }
 
+// ---- infra::ProblemParams -------------------------------------------------
+//
+// Contract: ProblemParams(p) self-computes everything addRelations needs for
+// that p: Montgomery constants for p; mask_bitlength/mask, a rejection-
+// sampling range covering exactly [0, p-2]; a smoothness bound B; the
+// product tree built over the factor base up to B; p's own factorization;
+// and smooth_density, which must be an actual probability in (0, 1] (not
+// logDickman's raw log-space output, which is <= 0 and would make
+// addRelations divide by a non-positive number).
+
+u128 find_prime_at_least(u128 start) {
+    u128 candidate = start | 1;
+    for (int i = 0; i < 1'000'000; ++i) {
+        if (gauss::isPrime(candidate)) return candidate;
+        candidate += 2;
+    }
+    throw std::runtime_error("find_prime_at_least: no prime found in range");
+}
+
+void check_problem_params_invariants(u128 p) {
+    ProblemParams params(p);
+
+    // mask_bitlength/mask describe exactly the range [0, p-2]: mask is the
+    // smallest all-ones bitmask that covers every set bit of p-2.
+    CHECK(params.mask_bitlength == 128 - clz128(p - 2));
+    CHECK((params.mask & (p - 2)) == (p - 2));
+    CHECK(params.mask_bitlength == 128 || (params.mask >> params.mask_bitlength) == 0);
+
+    // B is a usable smoothness bound, and every factor-base prime is <= B.
+    CHECK(params.B >= 2);
+    for (const mpz_class& prime : params.p_levels[0]) {
+        CHECK(mpz_to_u128(prime) <= params.B);
+    }
+
+    // The product tree's root is exactly the product of the base primes.
+    mpz_class expected_root = 1;
+    for (const mpz_class& prime : params.p_levels[0]) expected_root *= prime;
+    CHECK(params.p_levels.back()[0] == expected_root);
+
+    // p's own factorization reconstructs to p exactly.
+    u128 reconstructed = 1;
+    for (auto& [prime, exp] : params.p_factorization)
+        for (uint32_t e = 0; e < exp; ++e) reconstructed *= prime;
+    CHECK(reconstructed == p);
+
+    CHECK(params.smooth_density > 0.0);
+    CHECK(params.smooth_density <= 1.0);
+}
+
+void test_problem_params_invariants_across_prime_sizes() {
+    // A spread across the paper's actual target range (30-75 bits), plus a
+    // couple of small primes below it -- see CLAUDE.md's scope note that
+    // this project targets 30-75 bit primes, not the full u128 range.
+    const u128 primes[] = {
+        (u128)47,
+        (u128)1009,
+        (u128)8191,                        // 2^13 - 1, Mersenne prime
+        (u128)524287,                       // 2^19 - 1, Mersenne prime
+        (u128)2147483647ULL,                 // 2^31 - 1, Mersenne prime
+        (u128)2305843009213693951ULL,        // 2^61 - 1, Mersenne prime
+        find_prime_at_least((u128)1 << 74),  // ~75-bit, the paper's top end
+    };
+    for (u128 p : primes) check_problem_params_invariants(p);
+}
+
 // ---- infra::addRelations -------------------------------------------------
 //
 // Contract: addRelations(base, params, M, X) grows M/X by relation batches
@@ -223,49 +289,49 @@ void test_tree_factorize_randomized_reconstruction() {
 // produced it -- NOT the smooth value itself -- since X is the right-hand
 // side of the M*L === X (mod p-1) system the rest of the pipeline solves
 // for base's discrete logs. That's the specific thing these tests verify:
-// every (M[i], X[i]) pair must satisfy reconstruct(M[i]) == base^X[i] mod p.
+// every (M[i], X[i]) pair must satisfy reconstruct(M[i]) == base^X[i] mod p,
+// against ProblemParams's own self-computed factor base (not a hand-picked
+// one), since ProblemParams no longer accepts one from the caller.
 
-ProblemParams make_params(u128 p, u128 mask, int mask_bitlength, u128 B,
-                           double smooth_density, const std::vector<MpzVector>& levels) {
-    return ProblemParams{p, mont::inverse(p), mont::r_squared_mod_n(p), mask, B,
-                          smooth_density, levels, mask_bitlength};
+u128 reconstruct_from_params(const ProblemParams& params, const SparseList& factors) {
+    u128 acc = 1;
+    for (auto& [idx, exp] : factors) {
+        u128 prime = mpz_to_u128(params.p_levels[0][idx]);
+        for (uint32_t e = 0; e < exp; ++e) acc *= prime;
+    }
+    return acc;
 }
 
 void test_add_relations_reaches_factor_base_size_and_reconstructs() {
-    // p = 47: every residue mod p is < 47, so it's automatically fully
-    // smooth over a base containing every prime <= 47 -- a single batch of
-    // exactly k relations always suffices, deterministically (no flakiness
-    // from addRelations' internal random_device-seeded draws).
-    auto levels = buildProductTree(factor_base_mpz());
-    const size_t k = kSmallFactorBase.size();
+    // p = 47: ProblemParams's own heuristic picks a tiny factor base for a
+    // prime this small, so a handful of relations always suffices quickly.
     u128 p = 47, base = 5;
-    ProblemParams params = make_params(p, 63, 6, 47, 1.0, levels);
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
 
-    std::vector<SparseList> M;
+    RelationMatrix M;
     U128Vector X;
     addRelations(base, params, M, X);
 
-    CHECK(M.size() == k);
-    CHECK(X.size() == k);
+    CHECK(M.size() >= k);
+    CHECK(X.size() == M.size());
     for (size_t i = 0; i < M.size(); ++i) {
         u128 want = mont::powmod_odd(base, X[i], params.p, params.p_prime, params.r2);
-        CHECK(reconstruct(M[i]) == want);
+        CHECK(reconstruct_from_params(params, M[i]) == want);
     }
 }
 
-void test_add_relations_partial_density_still_reconstructs() {
+void test_add_relations_larger_prime_still_reconstructs() {
     // A realistic case where not every candidate is smooth (p is far larger
-    // than the factor base's top prime), and smooth_density is deliberately
-    // set well above the true rate, so batches under-deliver and multiple
-    // rounds are the likely path -- exactly the loop iteration this routine
-    // needs to get right. Regardless of how many rounds it actually takes,
-    // every relation produced must still be internally consistent.
-    auto levels = buildProductTree(factor_base_mpz());
-    const size_t k = kSmallFactorBase.size();
+    // than the factor base's top prime), so batches may need multiple
+    // rounds -- exactly the loop iteration this routine needs to get right.
+    // Regardless of how many rounds it actually takes, every relation
+    // produced must still be internally consistent.
     u128 p = 1009, base = 2;
-    ProblemParams params = make_params(p, 1023, 10, 47, 0.05, levels);
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
 
-    std::vector<SparseList> M;
+    RelationMatrix M;
     U128Vector X;
     addRelations(base, params, M, X);
 
@@ -274,7 +340,7 @@ void test_add_relations_partial_density_still_reconstructs() {
     for (size_t i = 0; i < M.size(); ++i) {
         CHECK(X[i] <= params.p - 2);
         u128 want = mont::powmod_odd(base, X[i], params.p, params.p_prime, params.r2);
-        CHECK(reconstruct(M[i]) == want);
+        CHECK(reconstruct_from_params(params, M[i]) == want);
     }
 }
 
@@ -296,8 +362,9 @@ int main() {
         {"smooth_candidates_single_prime_candidates", test_smooth_candidates_single_prime_candidates},
         {"tree_factorize_known_composite", test_tree_factorize_known_composite},
         {"tree_factorize_randomized_reconstruction", test_tree_factorize_randomized_reconstruction},
+        {"problem_params_invariants_across_prime_sizes", test_problem_params_invariants_across_prime_sizes},
         {"add_relations_reaches_factor_base_size_and_reconstructs", test_add_relations_reaches_factor_base_size_and_reconstructs},
-        {"add_relations_partial_density_still_reconstructs", test_add_relations_partial_density_still_reconstructs},
+        {"add_relations_larger_prime_still_reconstructs", test_add_relations_larger_prime_still_reconstructs},
     };
 
     for (auto& t : tests) {

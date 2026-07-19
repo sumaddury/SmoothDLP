@@ -23,7 +23,7 @@ std::vector<uint32_t> full_primes_array;
 static constexpr uint32_t SIEVE_BOUND = 5'000'000;
 static constexpr uint32_t MAX_SMALL_PRIME = 1'000'000;
 static std::bitset<SIEVE_BOUND + 1> prime_flag;
-static constexpr u128 MAX_NAIVE = (u128)1'000'000'000'000ULL;
+static constexpr u128 MAX_NAIVE = static_cast<u128>(1'000'000'000'000ULL);
 static constexpr std::array<uint32_t, 32> M = {{
     1, 3, 5, 7, 11, 13, 17, 19,
     23, 29, 31, 37, 41, 43, 47, 53,
@@ -32,7 +32,8 @@ static constexpr std::array<uint32_t, 32> M = {{
 }};
 static std::size_t CAP_END;
 
-static constexpr u128 DETERMINISTIC_MR_BOUND = (((u128)0x2be69ULL) << 64) | (u128)0x51adc5b22410a5fdULL;
+static constexpr u128 DETERMINISTIC_MR_BOUND =
+    (static_cast<u128>(0x2be69ULL) << 64) | static_cast<u128>(0x51adc5b22410a5fdULL);
 static constexpr std::array<uint64_t, 7> SMALL_WITNESSES = {2, 325, 9375, 28178, 450775, 9780504, 1795265022};
 static constexpr int RANDOM_MR_ROUNDS = 20;
 
@@ -55,9 +56,14 @@ struct SmallPrimesLoader {
     }
 } _small_primes_loader;
 
-std::vector<uint32_t> sieveTo(uint64_t n) {
-    std::vector<bool> composite(n + 1, false);
-    uint64_t L = (uint64_t)std::sqrt((double)n);
+std::vector<uint32_t> sieveTo(uint32_t n) {
+    // static_cast<size_t>(n) + 1, not n + 1: the latter wraps to 0 at
+    // n == UINT32_MAX.
+    std::vector<bool> composite(static_cast<size_t>(n) + 1, false);
+    // Sieving arithmetic stays in uint64_t: i*i and j += i are both fine in
+    // 64 bits for any i <= n, whereas in 32 bits j += i can wrap past the
+    // j <= n guard when n is near UINT32_MAX.
+    uint64_t L = static_cast<uint64_t>(std::sqrt(static_cast<double>(n)));
     while ((L + 1) * (L + 1) <= n) ++L;
     while (L > 0 && L * L > n) --L;
 
@@ -72,7 +78,7 @@ std::vector<uint32_t> sieveTo(uint64_t n) {
         primes.reserve(static_cast<size_t>(approx));
     }
     for (uint64_t i = 2; i <= n; ++i) {
-        if (!composite[i]) primes.push_back((uint32_t)i);
+        if (!composite[i]) primes.push_back(static_cast<uint32_t>(i));
     }
     return primes;
 }
@@ -80,8 +86,8 @@ std::vector<uint32_t> sieveTo(uint64_t n) {
 namespace {
 
 u128 random_u128() {
-    uint64_t hi = witness_rng(), lo = witness_rng();
-    return (((u128)hi) << 64) | (u128)lo;
+    const uint64_t hi = witness_rng(), lo = witness_rng();
+    return (static_cast<u128>(hi) << 64) | static_cast<u128>(lo);
 }
 
 bool miller_rabin_pass(u128 n, u128 d, unsigned s, u128 a,
@@ -109,7 +115,7 @@ bool miller_rabin_pass(u128 n, u128 d, unsigned s, u128 a,
 u128 isqrt(u128 n) {
     if (n == 0) return 0;
 
-    u128 x = ((u128)1) << (((127 - clz128(n)) / 2) + 1);
+    u128 x = static_cast<u128>(1) << (((127 - clz128(n)) / 2) + 1);
 
     while (true) {
         u128 xNext = (x + (n / x)) / 2;
@@ -126,7 +132,7 @@ bool cube_le(u128 r, u128 n) {
 u128 icbrt(u128 n) {
     if (n == 0) return 0;
 
-    u128 x = ((u128)1) << (((127 - clz128(n)) / 3) + 1);
+    u128 x = static_cast<u128>(1) << (((127 - clz128(n)) / 3) + 1);
 
     while (true) {
         u128 xNext = ((2 * x + ((n / x) / x))) / 3;
@@ -143,10 +149,10 @@ u128 icbrt(u128 n) {
 } // namespace
 
 bool isPrime(u128 n) {
-    if (n <= MAX_SMALL_PRIME) return prime_flag.test((uint32_t)n);
+    if (n <= MAX_SMALL_PRIME) return prime_flag.test(static_cast<uint32_t>(n));
     if (n % 2 == 0) return false;
 
-    u128 nm1 = n - 1;
+    const u128 nm1 = n - 1;
     u128 d = nm1;
     unsigned s = 0;
     while ((d & 1) == 0) {
@@ -154,20 +160,20 @@ bool isPrime(u128 n) {
         ++s;
     }
 
-    u128 n_prime = mont::inverse(n);
-    u128 r2 = mont::r_squared_mod_n(n);
-    u128 one_bar = mont::mulmod(1, r2, n, n_prime);
-    u128 nm1_bar = mont::mulmod(nm1, r2, n, n_prime);
+    const u128 n_prime = mont::inverse(n);
+    const u128 r2 = mont::r_squared_mod_n(n);
+    const u128 one_bar = mont::mulmod(1, r2, n, n_prime);
+    const u128 nm1_bar = mont::mulmod(nm1, r2, n, n_prime);
 
     if (n < DETERMINISTIC_MR_BOUND) {
         for (uint64_t a : SMALL_WITNESSES) {
-            if ((u128)a >= n) continue;
+            if (static_cast<u128>(a) >= n) continue;
             if (!miller_rabin_pass(n, d, s, a, n_prime, r2, one_bar, nm1_bar)) return false;
         }
     } else {
-        u128 range = n - 3;
+        const u128 range = n - 3;
         for (int i = 0; i < RANDOM_MR_ROUNDS; ++i) {
-            u128 a = 2 + (random_u128() % range);
+            const u128 a = 2 + (random_u128() % range);
             if (!miller_rabin_pass(n, d, s, a, n_prime, r2, one_bar, nm1_bar)) return false;
         }
     }
@@ -186,7 +192,7 @@ std::pair<FactorList, u128> factorize_naive(u128 n) {
         end = std::upper_bound(
                   full_primes_array.begin(),
                   full_primes_array.begin() + CAP_END,
-                  (uint32_t)L) - full_primes_array.begin();
+                  static_cast<uint32_t>(L)) - full_primes_array.begin();
     } else {
         end = static_cast<idx_t>(CAP_END);
     }
@@ -195,7 +201,7 @@ std::pair<FactorList, u128> factorize_naive(u128 n) {
     while (!isPrime(n)) {
         break_cond = true;
         for (idx_t i = start; i < end; ++i) {
-            uint32_t p = full_primes_array[i];
+            const uint32_t p = full_primes_array[i];
             if (n % p != 0) continue;
             uint32_t e = 0;
             while (n % p == 0) {
@@ -210,7 +216,7 @@ std::pair<FactorList, u128> factorize_naive(u128 n) {
                 end = std::upper_bound(
                           full_primes_array.begin() + start,
                           full_primes_array.begin() + CAP_END,
-                          (uint32_t)L) - full_primes_array.begin();
+                          static_cast<uint32_t>(L)) - full_primes_array.begin();
             } else {
                 end = static_cast<idx_t>(CAP_END);
             }
@@ -237,7 +243,7 @@ u128 squfof(u128 n_u128) {
 
         temp = 2 * r;
         mpz_sqrt(L.get_mpz_t(), temp.get_mpz_t());
-        uint64_t Lbound = 4 * L.get_ui();
+        const uint64_t Lbound = 4 * L.get_ui();
         for (uint64_t i = 2; i <= Lbound; ++i) {
             std::swap(a, c);
             q = (rn + b) / a;
@@ -271,17 +277,17 @@ u128 squfof(u128 n_u128) {
 
 FactorList factorize(u128 n) {
     std::map<u128, uint32_t> factors;
-    auto trial = factorize_naive(n);
-    auto& small = trial.first;
-    u128 rem = trial.second;
+    const auto trial = factorize_naive(n);
+    const auto& small = trial.first;
+    const u128 rem = trial.second;
     if (rem == 1) return small;
-    for (auto& pr : small) factors[pr.first] += pr.second;
+    for (const auto& pr : small) factors[pr.first] += pr.second;
 
     std::deque<u128> stack;
     stack.push_back(rem);
 
     while (!stack.empty()) {
-        u128 m = stack.back();
+        const u128 m = stack.back();
         stack.pop_back();
 
         if (isPrime(m)) {
@@ -289,14 +295,14 @@ FactorList factorize(u128 n) {
             continue;
         }
 
-        u128 r = isqrt(m);
+        const u128 r = isqrt(m);
         if (r * r == m) {
             stack.push_back(r);
             stack.push_back(r);
             continue;
         }
 
-        u128 cr = icbrt(m);
+        const u128 cr = icbrt(m);
         if (cr * cr * cr == m) {
             stack.push_back(cr);
             stack.push_back(cr);
@@ -304,7 +310,7 @@ FactorList factorize(u128 n) {
             continue;
         }
 
-        u128 f = squfof(m);
+        const u128 f = squfof(m);
         stack.push_back(f);
         stack.push_back(m / f);
     }

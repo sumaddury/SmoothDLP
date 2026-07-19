@@ -13,8 +13,8 @@ namespace py = pybind11;
 namespace {
 
 u128 pyint_to_u128(const py::object& o) {
-    py::bytes raw = o.attr("to_bytes")(16, "little", py::arg("signed") = false);
-    std::string buf = py::cast<std::string>(raw);
+    const py::bytes raw = o.attr("to_bytes")(16, "little", py::arg("signed") = false);
+    const std::string buf = py::cast<std::string>(raw);
     u128 result = 0;
     for (int i = 15; i >= 0; --i) {
         result = (result << 8) | static_cast<unsigned char>(buf[static_cast<size_t>(i)]);
@@ -28,14 +28,14 @@ py::int_ u128_to_pyint(u128 v) {
         buf[i] = static_cast<char>(static_cast<unsigned char>(v & 0xFF));
         v >>= 8;
     }
-    py::bytes raw(buf, 16);
-    static py::object int_type = py::module_::import("builtins").attr("int");
+    const py::bytes raw(buf, 16);
+    static const py::object int_type = py::module_::import("builtins").attr("int");
     return int_type.attr("from_bytes")(raw, "little").cast<py::int_>();
 }
 
 U128Vector pylist_to_u128vector(const py::iterable& o) {
     U128Vector v;
-    for (auto item : o) v.push_back(pyint_to_u128(py::reinterpret_borrow<py::object>(item)));
+    for (const auto& item : o) v.push_back(pyint_to_u128(py::reinterpret_borrow<py::object>(item)));
     return v;
 }
 
@@ -47,8 +47,8 @@ py::list u128vector_to_pylist(const U128Vector& v) {
 
 FactorList pylist_to_factorlist(const py::iterable& o) {
     FactorList v;
-    for (auto item : o) {
-        py::tuple t = py::reinterpret_borrow<py::tuple>(item);
+    for (const auto& item : o) {
+        const py::tuple t = py::reinterpret_borrow<py::tuple>(item);
         v.push_back({pyint_to_u128(t[0]), t[1].cast<uint32_t>()});
     }
     return v;
@@ -64,7 +64,7 @@ py::int_ mpz_to_pyint(const mpz_class& m) {
 
 MpzVector pylist_to_mpzvector(const py::iterable& o) {
     MpzVector v;
-    for (auto item : o) v.push_back(pyint_to_mpz(py::reinterpret_borrow<py::object>(item)));
+    for (const auto& item : o) v.push_back(pyint_to_mpz(py::reinterpret_borrow<py::object>(item)));
     return v;
 }
 
@@ -76,7 +76,7 @@ py::list mpzvector_to_pylist(const MpzVector& v) {
 
 std::vector<MpzVector> pylist_to_levels(const py::iterable& o) {
     std::vector<MpzVector> levels;
-    for (auto item : o) levels.push_back(pylist_to_mpzvector(py::reinterpret_borrow<py::iterable>(item)));
+    for (const auto& item : o) levels.push_back(pylist_to_mpzvector(py::reinterpret_borrow<py::iterable>(item)));
     return levels;
 }
 
@@ -91,19 +91,19 @@ py::list levels_to_pylist(const std::vector<MpzVector>& levels) {
 PYBIND11_MODULE(_core, m) {
     m.doc() = "";
 
-    m.def("sieve_to", [](uint64_t n) {
-        std::vector<uint32_t> primes = gauss::sieveTo(n);
+    m.def("sieve_to", [](uint32_t n) {
+        const std::vector<uint32_t> primes = gauss::sieveTo(n);
         py::list out(primes.size());
         for (size_t i = 0; i < primes.size(); ++i) out[i] = py::int_(primes[i]);
         return out;
     }, py::arg("n"));
 
-    m.def("is_prime", [](py::object o) {
+    m.def("is_prime", [](const py::object& o) {
         return gauss::isPrime(pyint_to_u128(o));
     }, py::arg("n"));
 
-    m.def("factorize", [](py::object o) {
-        auto vec = gauss::factorize(pyint_to_u128(o));
+    m.def("factorize", [](const py::object& o) {
+        const auto vec = gauss::factorize(pyint_to_u128(o));
         py::list out(vec.size());
         for (size_t i = 0; i < vec.size(); ++i) {
             out[i] = py::make_tuple(u128_to_pyint(vec[i].first), py::int_(vec[i].second));
@@ -111,8 +111,8 @@ PYBIND11_MODULE(_core, m) {
         return out;
     }, py::arg("n"));
 
-    m.def("factorize_naive", [](py::object o) {
-        auto result = gauss::factorize_naive(pyint_to_u128(o));
+    m.def("factorize_naive", [](const py::object& o) {
+        const auto result = gauss::factorize_naive(pyint_to_u128(o));
         py::list out(result.first.size());
         for (size_t i = 0; i < result.first.size(); ++i) {
             out[i] = py::make_tuple(u128_to_pyint(result.first[i].first), py::int_(result.first[i].second));
@@ -120,11 +120,11 @@ PYBIND11_MODULE(_core, m) {
         return py::make_tuple(out, u128_to_pyint(result.second));
     }, py::arg("n"));
 
-    m.def("squfof", [](py::object o) {
+    m.def("squfof", [](const py::object& o) {
         return u128_to_pyint(gauss::squfof(pyint_to_u128(o)));
     }, py::arg("n"));
 
-    m.def("is_smooth", [](py::object o, uint32_t y) {
+    m.def("is_smooth", [](const py::object& o, uint32_t y) {
         return salgo::isSmooth(pyint_to_u128(o), y);
     }, py::arg("x"), py::arg("y"));
 
@@ -132,31 +132,31 @@ PYBIND11_MODULE(_core, m) {
         return salgo::logDickman(u);
     }, py::arg("u"));
 
-    m.def("mp_ln", [](py::object o) {
+    m.def("mp_ln", [](const py::object& o) {
         return salgo::mp_ln(pyint_to_u128(o));
     }, py::arg("x"));
 
-    m.def("log_mul", [](py::object o, double log_rho) {
+    m.def("log_mul", [](const py::object& o, double log_rho) {
         return u128_to_pyint(salgo::log_mul(pyint_to_u128(o), log_rho));
     }, py::arg("x"), py::arg("log_rho"));
 
-    m.def("psi_approx", [](py::object o, uint64_t y) {
+    m.def("psi_approx", [](const py::object& o, uint64_t y) {
         return u128_to_pyint(salgo::psiApprox(pyint_to_u128(o), y));
     }, py::arg("x"), py::arg("y"));
 
-    m.def("build_product_tree", [](py::iterable level) {
+    m.def("build_product_tree", [](const py::iterable& level) {
         return levels_to_pylist(infra::buildProductTree(pylist_to_mpzvector(level)));
     }, py::arg("level"));
 
-    m.def("smooth_candidates", [](py::iterable p_levels, py::iterable X) {
-        auto idx = infra::smoothCandidates(pylist_to_levels(p_levels), pylist_to_u128vector(X));
+    m.def("smooth_candidates", [](const py::iterable& p_levels, const py::iterable& X) {
+        const auto idx = infra::smoothCandidates(pylist_to_levels(p_levels), pylist_to_u128vector(X));
         py::list out(idx.size());
         for (size_t i = 0; i < idx.size(); ++i) out[i] = py::int_(idx[i]);
         return out;
     }, py::arg("p_levels"), py::arg("X"));
 
-    m.def("tree_factorize", [](py::iterable p_levels, py::object d) {
-        SparseList result = infra::treeFactorize(pylist_to_levels(p_levels), pyint_to_u128(d));
+    m.def("tree_factorize", [](const py::iterable& p_levels, const py::object& d) {
+        const SparseList result = infra::treeFactorize(pylist_to_levels(p_levels), pyint_to_u128(d));
         py::list out(result.size());
         for (size_t i = 0; i < result.size(); ++i)
             out[i] = py::make_tuple(py::int_(result[i].first), py::int_(result[i].second));

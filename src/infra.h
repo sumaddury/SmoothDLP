@@ -40,20 +40,28 @@ SparseList treeFactorize(const std::vector<MpzVector>& p_levels, u128 d);
   (g-side or b-side) of one discrete-log instance: p is the prime modulus;
   p_prime/r2 are p's Montgomery constants (mont::inverse(p)/
   mont::r_squared_mod_n(p)), hoisted once for reuse across every powmod_odd
-  call rather than recomputed per relation; mask/B/mask_bitlength describe
-  the random-exponent rejection-sampling range (mask is the smallest
-  all-ones bitmask covering [0, p-2], mask_bitlength its bit count, B the
-  smoothness bound the factor base was built with); smooth_density is the
+  call rather than recomputed per relation; mask_bitlength/mask describe
+  the random-exponent rejection-sampling range (mask_bitlength is p-2's bit
+  count, mask the smallest all-ones bitmask covering [0, p-2]); B is the
+  smoothness bound the factor base is built with; smooth_density is the
   estimated probability that a random residue mod p is B-smooth (see
-  smooth_algos.h's logDickman), used to size relation-collection batches;
-  p_levels is the product tree built over the factor base (buildProductTree),
-  stored by reference since it's shared, read-only, and never rebuilt here.
+  smooth_algos.h's logDickman -- this is the actual probability, not its
+  log, since addRelations divides by it directly), used to size relation-
+  collection batches; p_levels is the product tree built over the factor
+  base (buildProductTree) and p_factorization is p's own factorization
+  (needed downstream for CRT over p-1) -- both computed once here and owned
+  by value: nothing outside ProblemParams holds this data, so a reference
+  member would dangle the instant the constructor returned.
 */
 struct ProblemParams {
-  const u128 p, p_prime, r2, mask, B;
-  const double smooth_density;
-  const std::vector<MpzVector>& p_levels;
+  const u128 p, p_prime, r2;
   const int mask_bitlength;
+  const u128 mask, B;
+  const double smooth_density;
+  const std::vector<MpzVector> p_levels;
+  const FactorList p_factorization;
+
+  ProblemParams(u128 p);
 };
 
 /**
@@ -71,5 +79,8 @@ void addRelations(
     const ProblemParams& params,
     RelationMatrix& M,
     U128Vector& X);
+
+
+
 
 } // namespace infra

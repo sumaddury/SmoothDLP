@@ -40,12 +40,13 @@ enum class Method { SparseElimination, Wiedemann };
 
 /**
   Outcome of a solve attempt. OK means LinBox returned a vector (which may
-  still be only partially meaningful -- see SolveResult::unsatisfied_rows
-  and the rank discussion there). INCONSISTENT means the system has no
-  solution at all, which for genuine relation data means a corrupt
-  relation rather than an unlucky matrix. MODULUS_TOO_LARGE and
-  BAD_DIMENSIONS are caller-input rejections, checked before any LinBox
-  call. FAILED is any other LinBox-reported failure.
+  still be only partially meaningful -- see SolveResult's own doc and the
+  rank discussion there; checking which coordinates are actually
+  determined is the caller's job, via rankModPrime, not this library's).
+  INCONSISTENT means the system has no solution at all, which for genuine
+  relation data means a corrupt relation rather than an unlucky matrix.
+  MODULUS_TOO_LARGE and BAD_DIMENSIONS are caller-input rejections, checked
+  before any LinBox call. FAILED is any other LinBox-reported failure.
 */
 enum class SolveStatus { OK, INCONSISTENT, MODULUS_TOO_LARGE, BAD_DIMENSIONS, FAILED };
 
@@ -53,27 +54,18 @@ enum class SolveStatus { OK, INCONSISTENT, MODULUS_TOO_LARGE, BAD_DIMENSIONS, FA
   Result of solveModPrime. L has length n_cols and is only populated when
   status == OK; it holds one residue mod q per factor-base column.
 
-  unsatisfied_rows lists the indices of any rows i for which the returned L
-  does not actually satisfy row i of M*L === X (mod q). It is computed
-  independently of LinBox, by re-multiplying the caller's own M, so it is a
-  genuine check on LinBox's output rather than a restatement of it. For a
-  consistent system it should come back empty; a non-empty list on status
-  OK means LinBox returned something that does not solve the system, and
-  the result must not be trusted.
-
-  Note what this does NOT tell you: an empty unsatisfied_rows says L solves
-  the system, not that every coordinate of L is uniquely determined. When M
-  is rank-deficient mod q, the solution space is a coset of a nonzero
-  kernel, and coordinates lying in that kernel are arbitrary while still
-  satisfying every row. Those coordinates are exactly the ones that must be
-  discarded downstream by re-exponentiation (g^L_j == p_j mod p) after CRT
-  recombination -- which cannot be done here, since it needs L mod (p-1)
-  rather than L mod q.
+  When status is OK, L solves the system. What that does NOT mean is that
+  every coordinate of L is uniquely determined: if M is rank-deficient mod
+  q, the solution space is a coset of a nonzero kernel, and coordinates
+  lying in that kernel are arbitrary while still satisfying every row.
+  Sorting the determined coordinates from the arbitrary ones happens
+  downstream by re-exponentiation (g^L_j == p_j mod p) after CRT
+  recombination, which cannot be done here -- it needs L mod (p-1), not L
+  mod q.
 */
 struct SolveResult {
   SolveStatus status;
   U128Vector L;
-  std::vector<size_t> unsatisfied_rows;
 };
 
 /**
@@ -93,8 +85,7 @@ struct SolveResult {
 
   q must be an odd prime <= MAX_MODULUS. Primality is a precondition and is
   NOT checked (checking it would pull the whole factoring stack into this
-  translation unit); a composite q yields meaningless output, though the
-  unsatisfied_rows check will usually catch it.
+  translation unit); a composite q yields meaningless output.
 
   The caller's M and X are not modified. LinBox's solve consumes the matrix
   it is handed, so this builds its own copy internally.

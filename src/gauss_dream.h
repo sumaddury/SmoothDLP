@@ -16,8 +16,19 @@ extern std::vector<uint32_t> full_primes_array;
 
 /**
   Every prime <= n, in increasing order (sieve of Eratosthenes).
+
+  n is uint32_t so that the element type can honestly be uint32_t: every
+  prime <= UINT32_MAX fits, with no truncation possible. That is not a
+  limitation in practice -- the only thing sized against this is the
+  smoothness bound B ~ exp(0.707*sqrt(ln p * ln ln p)), which is about
+  25 thousand for a 75-bit p and about 1.3 million even at the 128-bit
+  ceiling of u128, some three orders of magnitude below UINT32_MAX.
+
+  Memory is the real constraint well before the type is: the sieve holds
+  n+1 bits, so n = 2^32 would want a 512 MB bitset plus ~774 MB of output.
+  Keep n in the low millions and it costs almost nothing.
 */
-std::vector<uint32_t> sieveTo(uint64_t n);
+std::vector<uint32_t> sieveTo(uint32_t n);
 
 /**
   Primality test for n. Exact (bitset lookup against full_primes_array) for

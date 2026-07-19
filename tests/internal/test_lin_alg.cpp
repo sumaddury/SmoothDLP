@@ -9,7 +9,7 @@
 // Systems are built by planting a known solution L_true, forming
 // X = M*L_true (mod q), and then checking what comes back. Two distinct
 // properties are checked throughout, and they are NOT the same thing:
-//   * the returned L satisfies every row (result.unsatisfied_rows empty), and
+//   * the returned L satisfies every row (checked here via unsatisfiedRows), and
 //   * the returned L equals L_true coordinate-for-coordinate.
 // The first always holds for a consistent system; the second holds only for
 // coordinates that are uniquely determined, which is exactly the
@@ -43,6 +43,45 @@ void report_failure(const char* file, int line, const std::string& msg) {
     } while (0)
 
 std::mt19937_64 rng(0xC0FFEEULL);
+
+/**
+  Rows of M*L === X (mod q) that L fails to satisfy. This lives here, in the
+  test suite, rather than in lin_alg itself: the production code picks a
+  field configuration that is correct and uses it, and re-proving that on
+  every solve would cost an extra sparse matvec per call for nothing. The
+  job of pinning that the configuration really is correct belongs to this
+  file, and this helper is how it does it.
+
+  It is not idle paranoia here: the field lin_alg deliberately avoids
+  (Modular<uint64_t,__uint128_t>) returns success with a vector failing 1 of
+  5 rows at q=2^33 and 3 of 5 at q=2^64-59, so this is exactly the check
+  that would catch anyone swapping the field out.
+
+  Arithmetic stays exact in u128: both factors are reduced below
+  q <= 2^64-1, so their product is at most (2^64-1)^2, below 2^128.
+  Repeated column indices in a row are summed, matching how lin_alg builds
+  the matrix. Any modulus works -- q need not be prime, since this only
+  multiplies and compares.
+*/
+std::vector<size_t> unsatisfiedRows(const RelationMatrix& M, const U128Vector& X,
+                                    const U128Vector& L, u128 q) {
+    std::vector<size_t> bad;
+    if (q < 2 || X.size() != M.size()) {
+        for (size_t i = 0; i < M.size(); ++i) bad.push_back(i);
+        return bad;
+    }
+    for (size_t i = 0; i < M.size(); ++i) {
+        u128 acc = 0;
+        bool in_range = true;
+        for (const auto& entry : M[i]) {
+            if (entry.first >= L.size()) { in_range = false; break; }
+            u128 coeff = (u128)entry.second % q;
+            acc = (acc + (coeff * L[entry.first]) % q) % q;
+        }
+        if (!in_range || acc != X[i] % q) bad.push_back(i);
+    }
+    return bad;
+}
 
 // A few primes spanning the supported range. 2^32 matters because the
 // field this module deliberately avoids (Modular<uint64_t,__uint128_t>)
@@ -107,7 +146,7 @@ void test_solve_recovers_planted_solution_small_prime() {
     System s = buildSystem(40, 20, 3, P_SMALL);
     SolveResult r = solveModPrime(s.M, s.X, 20, P_SMALL);
     CHECK(r.status == SolveStatus::OK);
-    CHECK(r.unsatisfied_rows.empty());
+    CHECK(unsatisfiedRows(s.M, s.X, r.L, P_SMALL).empty());
     CHECK(matchesPlanted(r, s.L_true));
 }
 
@@ -120,7 +159,7 @@ void test_solve_is_correct_across_prime_sizes() {
         System s = buildSystem(60, 30, 3, q);
         SolveResult r = solveModPrime(s.M, s.X, 30, q);
         CHECK(r.status == SolveStatus::OK);
-        CHECK(r.unsatisfied_rows.empty());
+        CHECK(unsatisfiedRows(s.M, s.X, r.L, q).empty());
         CHECK(matchesPlanted(r, s.L_true));
     }
 }
@@ -132,7 +171,7 @@ void test_solve_randomized_full_rank_systems() {
         System s = buildSystem(m, n, 3, P_2_64);
         SolveResult r = solveModPrime(s.M, s.X, n, P_2_64);
         CHECK(r.status == SolveStatus::OK);
-        CHECK(r.unsatisfied_rows.empty());
+        CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
     }
 }
 
@@ -142,7 +181,7 @@ void test_solve_handles_rectangular_overdetermined() {
     System s = buildSystem(300, 100, 4, P_2_64);
     SolveResult r = solveModPrime(s.M, s.X, 100, P_2_64);
     CHECK(r.status == SolveStatus::OK);
-    CHECK(r.unsatisfied_rows.empty());
+    CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
     CHECK(matchesPlanted(r, s.L_true));
 }
 
@@ -179,7 +218,7 @@ void test_duplicate_column_entries_are_summed() {
     }
     SolveResult r = solveModPrime(M, X, 2, q);
     CHECK(r.status == SolveStatus::OK);
-    CHECK(r.unsatisfied_rows.empty());
+    CHECK(unsatisfiedRows(M, X, r.L, q).empty());
     CHECK(r.L.size() == 2 && r.L[0] == 11 && r.L[1] == 23);
 
     // An explicitly pre-summed row must give the identical answer.
@@ -188,6 +227,85 @@ void test_duplicate_column_entries_are_summed() {
     SolveResult r2 = solveModPrime(M2, X, 2, q);
     CHECK(r2.status == SolveStatus::OK);
     CHECK(r2.L == r.L);
+}
+
+// ---- unsatisfiedRows: the checker itself ------------------------------------
+//
+// Every other test in this file asserts unsatisfied_rows comes back EMPTY.
+// That alone would pass even if the checker were broken and always returned
+// nothing -- which would silently disarm the one guard standing between a
+// wrong LinBox result and the rest of the project. These tests drive it in
+// the detecting direction, with solutions deliberately corrupted.
+//
+// This matters concretely: the field this module avoids
+// (Modular<uint64_t,__uint128_t>) really does return status OK with a vector
+// that fails 1-3 rows of a 5x5 system once q exceeds 2^32. A checker that
+// cannot detect that is worthless.
+
+void test_unsatisfied_rows_detects_a_corrupted_solution() {
+    const u128 q = P_2_64;
+    System s = buildSystem(30, 12, 3, q);
+    CHECK(unsatisfiedRows(s.M, s.X, s.L_true, q).empty());   // truth passes
+
+    // Perturbing one coordinate must break every row that references it,
+    // and no others.
+    for (size_t j = 0; j < 12; ++j) {
+        U128Vector L = s.L_true;
+        L[j] = (L[j] + 1) % q;
+        std::vector<size_t> bad = unsatisfiedRows(s.M, s.X, L, q);
+
+        std::vector<size_t> expected;
+        for (size_t i = 0; i < s.M.size(); ++i)
+            for (const auto& e : s.M[i])
+                if (e.first == j) { expected.push_back(i); break; }
+
+        CHECK(bad == expected);
+        CHECK(!bad.empty());          // every column is referenced somewhere
+    }
+}
+
+void test_unsatisfied_rows_detects_a_wholly_wrong_solution() {
+    const u128 q = P_2_64;
+    System s = buildSystem(20, 10, 3, q);
+    U128Vector zeros(10, 0);
+    std::vector<size_t> bad = unsatisfiedRows(s.M, s.X, zeros, q);
+    // With an all-zero L every row evaluates to 0, so exactly the rows whose
+    // true right-hand side is nonzero must be reported.
+    size_t expected = 0;
+    for (size_t i = 0; i < s.X.size(); ++i) if (s.X[i] % q != 0) ++expected;
+    CHECK(bad.size() == expected);
+    CHECK(bad.size() > 0);
+}
+
+void test_unsatisfied_rows_detects_a_corrupted_rhs() {
+    const u128 q = P_2_40;
+    System s = buildSystem(20, 10, 3, q);
+    s.X[7] = (s.X[7] + 1) % q;                 // one relation's t is wrong
+    std::vector<size_t> bad = unsatisfiedRows(s.M, s.X, s.L_true, q);
+    CHECK(bad.size() == 1);
+    CHECK(!bad.empty() && bad[0] == 7);
+}
+
+void test_unsatisfied_rows_rejects_malformed_input() {
+    const u128 q = P_SMALL;
+    System s = buildSystem(10, 5, 2, q);
+    U128Vector short_L(3, 0);                  // fewer entries than columns
+    CHECK(unsatisfiedRows(s.M, s.X, short_L, q).size() == s.M.size());
+    U128Vector short_X = s.X; short_X.pop_back();
+    CHECK(unsatisfiedRows(s.M, short_X, s.L_true, q).size() == s.M.size());
+}
+
+// The checker is also the tool for verifying solutions this module did not
+// produce -- a lifted L mod q^e, or a recombined L mod p-1 -- so it must
+// work for a composite modulus too, where "solve" would be meaningless.
+void test_unsatisfied_rows_works_for_composite_modulus() {
+    const u128 mod = 1012;                     // 2^2 * 11 * 23, a real p-1
+    RelationMatrix M = { {{1,1}}, {{2,3}}, {{0,1},{3,1}} };
+    U128Vector X = {1, 247, 172};
+    U128Vector L_true = {363, 1, 757, 821};    // the true logs mod 1012
+    CHECK(unsatisfiedRows(M, X, L_true, mod).empty());
+    U128Vector L_bad = L_true; L_bad[0] = (L_bad[0] + 1) % mod;
+    CHECK(unsatisfiedRows(M, X, L_bad, mod).size() == 1);
 }
 
 // ---- solveModPrime: partial rank --------------------------------------------
@@ -233,7 +351,7 @@ void test_solve_partial_rank_locks_determined_coordinates() {
 
     SolveResult r = solveModPrime(s.M, s.X, n, P_2_64);
     CHECK(r.status == SolveStatus::OK);
-    CHECK(r.unsatisfied_rows.empty());       // still a genuine solution
+    CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());   // still a genuine solution
 
     // Every coordinate outside the kernel must be exactly the planted value;
     // only src/dup are permitted to differ.
@@ -289,7 +407,7 @@ void test_wiedemann_solves_square_systems() {
     System s = buildSystem(60, 60, 4, P_2_64);
     SolveResult r = solveModPrime(s.M, s.X, 60, P_2_64, Method::Wiedemann);
     if (r.status == SolveStatus::OK) {
-        CHECK(r.unsatisfied_rows.empty());
+        CHECK(unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
     } else {
         // Wiedemann is randomized and may report failure on an unlucky
         // draw; what it must never do is return OK with a bad vector.
@@ -302,8 +420,8 @@ void test_wiedemann_and_elimination_agree_on_row_satisfaction() {
     SolveResult a = solveModPrime(s.M, s.X, 50, P_2_40, Method::SparseElimination);
     SolveResult b = solveModPrime(s.M, s.X, 50, P_2_40, Method::Wiedemann);
     CHECK(a.status == SolveStatus::OK);
-    CHECK(a.unsatisfied_rows.empty());
-    if (b.status == SolveStatus::OK) CHECK(b.unsatisfied_rows.empty());
+    CHECK(unsatisfiedRows(s.M, s.X, a.L, P_2_40).empty());
+    if (b.status == SolveStatus::OK) CHECK(unsatisfiedRows(s.M, s.X, b.L, P_2_40).empty());
 }
 
 // ---- Inconsistent systems ---------------------------------------------------
@@ -318,7 +436,7 @@ void test_inconsistent_system_is_not_silently_accepted() {
     s.X.push_back((s.X[0] + 1) % P_2_64);        // ...with a different RHS
     SolveResult r = solveModPrime(s.M, s.X, 15, P_2_64);
     if (r.status == SolveStatus::OK) {
-        CHECK(!r.unsatisfied_rows.empty());
+        CHECK(!unsatisfiedRows(s.M, s.X, r.L, P_2_64).empty());
     } else {
         CHECK(r.status == SolveStatus::INCONSISTENT || r.status == SolveStatus::FAILED);
     }
@@ -398,6 +516,11 @@ int main() {
         {"solve_handles_rectangular_overdetermined", test_solve_handles_rectangular_overdetermined},
         {"solve_reduces_unreduced_rhs", test_solve_reduces_unreduced_rhs},
         {"duplicate_column_entries_are_summed", test_duplicate_column_entries_are_summed},
+        {"unsatisfied_rows_detects_a_corrupted_solution", test_unsatisfied_rows_detects_a_corrupted_solution},
+        {"unsatisfied_rows_detects_a_wholly_wrong_solution", test_unsatisfied_rows_detects_a_wholly_wrong_solution},
+        {"unsatisfied_rows_detects_a_corrupted_rhs", test_unsatisfied_rows_detects_a_corrupted_rhs},
+        {"unsatisfied_rows_rejects_malformed_input", test_unsatisfied_rows_rejects_malformed_input},
+        {"unsatisfied_rows_works_for_composite_modulus", test_unsatisfied_rows_works_for_composite_modulus},
         {"solve_partial_rank_locks_determined_coordinates", test_solve_partial_rank_locks_determined_coordinates},
         {"rank_is_full_for_generic_system", test_rank_is_full_for_generic_system},
         {"rank_depends_on_the_modulus", test_rank_depends_on_the_modulus},

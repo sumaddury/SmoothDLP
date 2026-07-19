@@ -33,7 +33,10 @@ LIBS     := -lgmpxx -lgmp
 MONT_SRC := test_montgomery.cpp $(SRCDIR)/montgomery.cpp
 MONT_BIN := test_montgomery
 
-INFRA_SRC := test_infra.cpp $(SRCDIR)/infra.cpp $(SRCDIR)/montgomery.cpp
+# ProblemParams (in infra.cpp) now computes its own smoothness bound and
+# factor base, so it calls into smooth_algos.cpp (mp_ln/logDickman) and
+# gauss_dream.cpp (sieveTo/factorize) -- both must link here too.
+INFRA_SRC := test_infra.cpp $(SRCDIR)/infra.cpp $(SRCDIR)/smooth_algos.cpp $(SRCDIR)/gauss_dream.cpp $(SRCDIR)/montgomery.cpp
 INFRA_BIN := test_infra
 
 GAUSS_SRC := test_gauss_dream.cpp $(SRCDIR)/gauss_dream.cpp $(SRCDIR)/montgomery.cpp
@@ -67,7 +70,7 @@ all: $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN)
 $(MONT_BIN): $(MONT_SRC) $(SRCDIR)/montgomery.h $(SRCDIR)/types.h
 	$(CXX) $(CXXFLAGS) $(MONT_SRC) -o $(MONT_BIN) $(LDFLAGS) $(LIBS)
 
-$(INFRA_BIN): $(INFRA_SRC) $(SRCDIR)/infra.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h
+$(INFRA_BIN): $(INFRA_SRC) $(SRCDIR)/infra.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h $(SRCDIR)/smooth_algos.h $(SRCDIR)/gauss_dream.h
 	$(CXX) $(CXXFLAGS) $(INFRA_SRC) -o $(INFRA_BIN) $(LDFLAGS) $(LIBS)
 
 $(GAUSS_BIN): $(GAUSS_SRC) $(SRCDIR)/gauss_dream.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h

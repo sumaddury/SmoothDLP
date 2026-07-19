@@ -23,7 +23,7 @@
 
 namespace lin_alg {
 
-const u128 MAX_MODULUS = ~static_cast<u128>(0) >> 64;   // 2^64 - 1
+const u128 MAX_MODULUS = ~(u128)0 >> 64;   // 2^64 - 1
 
 namespace {
 
@@ -38,7 +38,7 @@ using Vector = LinBox::DenseVector<Field>;
   the most-vexing-parse rule would read as a function declaration.
 */
 Field makeField(u128 q) {
-    const RecInt::ruint<7> modulus(static_cast<uint64_t>(q));
+    RecInt::ruint<7> modulus((uint64_t)q);
     return Field(modulus);
 }
 
@@ -82,20 +82,20 @@ void fillMatrix(Matrix& A, const Field& F, const RelationMatrix& M, u128 q) {
         std::sort(row.begin(), row.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
         for (size_t k = 0; k < row.size();) {
-            const size_t col = row[k].first;
+            size_t col = row[k].first;
             u128 sum = 0;
             while (k < row.size() && row[k].first == col) {
-                sum = (sum + static_cast<u128>(row[k].second)) % q;
+                sum = (sum + (u128)row[k].second) % q;
                 ++k;
             }
             if (sum == 0) continue;
             Field::Element e;
-            F.init(e, static_cast<uint64_t>(sum));
+            F.init(e, (uint64_t)sum);
             A.setEntry(i, col, e);
         }
     }
     A.finalize();
-}
+x}
 
 } // namespace
 
@@ -113,14 +113,14 @@ SolveResult solveModPrime(const RelationMatrix& M, const U128Vector& X,
         return result;
     }
 
-    const Field F = makeField(q);
+    Field F = makeField(q);
     Matrix A(F, M.size(), n_cols);
     fillMatrix(A, F, M, q);
 
     Vector b(F, M.size());
     for (size_t i = 0; i < M.size(); ++i) {
         Field::Element e;
-        F.init(e, static_cast<uint64_t>(X[i] % q));
+        F.init(e, (uint64_t)(X[i] % q));
         b.setEntry(i, e);
     }
 
@@ -151,7 +151,7 @@ SolveResult solveModPrime(const RelationMatrix& M, const U128Vector& X,
     for (size_t j = 0; j < n_cols; ++j) {
         uint64_t v = 0;
         F.convert(v, x[j]);
-        result.L[j] = static_cast<u128>(v);
+        result.L[j] = (u128)v;
     }
     result.status = SolveStatus::OK;
     return result;
@@ -161,7 +161,7 @@ size_t rankModPrime(const RelationMatrix& M, size_t n_cols, u128 q) {
     if (q < 2 || q > MAX_MODULUS) return SIZE_MAX;
     if (n_cols == 0 || M.empty() || !dimensionsValid(M, n_cols, nullptr)) return SIZE_MAX;
 
-    const Field F = makeField(q);
+    Field F = makeField(q);
     Matrix A(F, M.size(), n_cols);
     fillMatrix(A, F, M, q);
 
@@ -175,7 +175,7 @@ size_t rankModPrime(const RelationMatrix& M, size_t n_cols, u128 q) {
     } catch (...) {
         return SIZE_MAX;
     }
-    return static_cast<size_t>(r);
+    return (size_t)r;
 }
 
 } // namespace lin_alg

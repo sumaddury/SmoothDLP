@@ -17,8 +17,8 @@ using FactorList = std::vector<std::pair<u128, uint32_t>>;       // (prime, expo
   constructor) and recombining as hi*2^64 + lo.
 */
 inline mpz_class u128_to_mpz(u128 v) {
-    mpz_class hi((unsigned long)(uint64_t)(v >> 64));
-    mpz_class lo((unsigned long)(uint64_t)(v));
+    mpz_class hi(static_cast<unsigned long>(static_cast<uint64_t>(v >> 64)));
+    mpz_class lo(static_cast<unsigned long>(static_cast<uint64_t>(v)));
     return (hi << 64) + lo;
 }
 
@@ -32,7 +32,7 @@ inline u128 mpz_to_u128(const mpz_class& m) {
     uint64_t lo = mpz_get_ui(tmp.get_mpz_t());
     mpz_class shifted = tmp >> 64;
     uint64_t hi = mpz_get_ui(shifted.get_mpz_t());
-    return ((u128)hi << 64) | (u128)lo;
+    return (static_cast<u128>(hi) << 64) | static_cast<u128>(lo);
 }
 
 /**
@@ -40,9 +40,9 @@ inline u128 mpz_to_u128(const mpz_class& m) {
   == 128). Equivalently, 128 - bit_length(x).
 */
 inline int clz128(u128 x) {
-    uint64_t hi = (uint64_t)(x >> 64);
+    uint64_t hi = static_cast<uint64_t>(x >> 64);
     if (hi != 0) return __builtin_clzll(hi);
-    uint64_t lo = (uint64_t)x;
+    uint64_t lo = static_cast<uint64_t>(x);
     return lo != 0 ? 64 + __builtin_clzll(lo) : 128;
 }
 
@@ -51,9 +51,9 @@ inline int clz128(u128 x) {
   largest k such that 2^k divides x -- e.g. x >> ctz128(x) is x's odd part.
 */
 inline int ctz128(u128 x) {
-    uint64_t lo = (uint64_t)x;
+    uint64_t lo = static_cast<uint64_t>(x);
     if (lo != 0) return __builtin_ctzll(lo);
-    uint64_t hi = (uint64_t)(x >> 64);
+    uint64_t hi = static_cast<uint64_t>(x >> 64);
     return (hi != 0) ? 64 + __builtin_ctzll(hi) : 128;
 }
 
@@ -61,8 +61,8 @@ inline int ctz128(u128 x) {
   Number of set (1) bits in x, over the full 128-bit width.
 */
 inline int popcount128(u128 x) {
-    uint64_t lo = (uint64_t)x;
-    uint64_t hi = (uint64_t)(x >> 64);
+    uint64_t lo = static_cast<uint64_t>(x);
+    uint64_t hi = static_cast<uint64_t>(x >> 64);
 
     return __builtin_popcountll(lo) + __builtin_popcountll(hi);
 }
