@@ -69,7 +69,7 @@ struct ProblemParams {
 void addRelations(
     u128 base,
     const ProblemParams& params,
-    std::vector<SparseList>& M,
+    RelationMatrix& M,
     U128Vector& X);
 
 } // namespace infra

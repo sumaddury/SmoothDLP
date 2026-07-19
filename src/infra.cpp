@@ -17,41 +17,6 @@
 
 namespace infra {
 
-// The LinBox/Givaro-based sparse linear solve below (linSolve/linSolveImpl/
-// crtSolve/rank_relation_gf2, and the includes/typedefs they need) is
-// disabled: we haven't actually figured out how to use Givaro/LinBox
-// correctly yet, so no line of code touching either library should be
-// trusted. Nothing else in this file depends on any of it -- buildProductTree
-// /smoothCandidates/treeFactorize only ever use GMP + montgomery.h. Not
-// declared in infra.h, not bound in core.cpp, not covered by any test.
-#if 0
-#include <linbox/matrix/sparse-matrix.h>
-
-#include <linbox/linbox-config.h>
-#include <linbox/algorithms/block-wiedemann.h>
-#include <linbox/matrix/matrix-domain.h>
-#include <linbox/solutions/solution-tags.h>
-#include <linbox/solutions/solve.h>
-#include <linbox/solutions/methods.h>
-#include <linbox/util/error.h>
-#include <linbox/solutions/solve/solve-wiedemann.h>
-#include <linbox/ring/modular.h>
-#include <linbox/solutions/rank.h>
-#include <linbox/field/gf2.h>
-#include <linbox/blackbox/zero-one.h>
-#include <linbox/algorithms/gauss-gf2.h>
-#include <linbox/blackbox/permutation.h>
-#include <linbox/algorithms/gauss.h>
-
-using Field64 = Givaro::Modular<int64_t, __uint128_t>;
-using Field32 = Givaro::Modular<uint32_t, uint64_t>;
-template<typename Field> using Sparse = LinBox::SparseMatrix<Field>;
-template<typename Field> using Vec = LinBox::DenseVector<Field>;
-struct Part { MpzVector x; mpz_class mod; };
-using Seq = LinBox::SparseMatrixFormat::SparseSeq;
-using Gf2 = LinBox::GF2;
-#endif // LinBox/Givaro disabled
-
 std::vector<MpzVector> buildProductTree(MpzVector level) {
     size_t lvl_size = level.size();
     size_t height = 1 + (lvl_size > 1 ? (32 - __builtin_clz((unsigned)lvl_size - 1)) : 0);
@@ -207,7 +172,7 @@ u128 drawT(u128 L, u128 mask) {
 void addRelations(
     u128 base,
     const ProblemParams& params,
-    std::vector<SparseList>& M,
+    RelationMatrix& M,
     U128Vector& X) {
   const size_t k = params.p_levels[0].size();
   size_t added = 0;
