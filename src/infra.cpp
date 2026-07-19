@@ -17,33 +17,63 @@
 
 namespace infra {
 
-std::vector<MpzVector> buildProductTree(MpzVector level) {
-    size_t lvl_size = level.size();
-    size_t height = 1 + (lvl_size > 1 ? (32 - __builtin_clz(static_cast<unsigned>(lvl_size) - 1)) : 0);
-    std::vector<MpzVector> levels;
-    levels.reserve(height);
+namespace {
 
-    level.reserve(lvl_size);
-    levels.push_back(std::move(level));
-    MpzVector next_level;
-    while (lvl_size > 1) {
-        next_level.clear();
-        next_level.reserve((lvl_size + 1) >> 1);
-
-        const auto& cur = levels.back();
-        for (size_t i = 0; i < lvl_size; i += 2) {
-            if (i + 1 < lvl_size) {
-                next_level.emplace_back(cur[i] * cur[i + 1]);
-            } else next_level.emplace_back(cur[lvl_size - 1]);
-        }
-
-        levels.push_back(std::move(next_level));
-        lvl_size = levels.back().size();
-    }
-    return levels;
+inline uint32_t find_pow(mpz_class d, const mpz_class& P) {
+    uint32_t exp = 0;
+    do {
+        exp++;
+        d /= P;
+    } while (d % P == 0);
+    return exp;
 }
 
-static MpzVector batchRemainders(const std::vector<MpzVector>& p_levels, const MpzVector& X) {
+int computeMaskBitlength(u128 p) {
+  return 128 - clz128(p - 2);
+}
+
+u128 computeMask(int mask_bitlength) {
+  return (mask_bitlength == 128) ? ~static_cast<u128>(0) : ((static_cast<u128>(1) << mask_bitlength) - 1);
+}
+
+// C = 1/sqrt(2): a fixed heuristic constant, not tuned or tabulated per-p.
+u128 computeSmoothnessBound(u128 p) {
+  const double C = 1.0 / std::sqrt(2.0);
+  const double ln_p = salgo::mp_ln(p);
+  const double ln_B = C * std::sqrt(ln_p * std::log(ln_p));
+  return static_cast<u128>(std::ceil(std::exp(ln_B)));
+}
+
+std::vector<MpzVector> productTreeForBound(u128 B) {
+  const std::vector<uint32_t> factor_base = gauss::sieveTo(static_cast<uint32_t>(B));
+  return buildProductTree(MpzVector(factor_base.begin(), factor_base.end()));
+}
+
+// Uniform random value in [0, L] via rejection sampling: draw a full 128-bit
+// value, mask it down to L's bit range (mask is the caller-supplied all-ones
+// bitmask covering [0, L]), and retry on the rare draw that still lands
+// above L. Below 2^64, a single uniform_int_distribution draw suffices.
+u128 drawT(u128 L, u128 mask) {
+  thread_local std::random_device rd;
+  thread_local std::mt19937_64 gen(rd());
+
+  if (L <= std::numeric_limits<uint64_t>::max())
+    return std::uniform_int_distribution<uint64_t>(0, static_cast<uint64_t>(L))(gen);
+
+  u128 num;
+
+  do {
+    const uint64_t lo = std::uniform_int_distribution<uint64_t>(
+        0, std::numeric_limits<uint64_t>::max())(gen);
+    const uint64_t hi = std::uniform_int_distribution<uint64_t>(
+        0, std::numeric_limits<uint64_t>::max())(gen);
+    num = ((static_cast<u128>(hi) << 64) | static_cast<u128>(lo)) & mask;
+  } while (num > L);
+
+  return num;
+}
+
+MpzVector batchRemainders(const std::vector<MpzVector>& p_levels, const MpzVector& X) {
     const mpz_class& Z = p_levels.back()[0];
     auto x_levels = buildProductTree(X);
     size_t h = x_levels.size() - 1;
@@ -69,6 +99,34 @@ static MpzVector batchRemainders(const std::vector<MpzVector>& p_levels, const M
     }
 
     return rems;
+}
+
+} // namespace
+
+std::vector<MpzVector> buildProductTree(MpzVector level) {
+    size_t lvl_size = level.size();
+    size_t height = 1 + (lvl_size > 1 ? (32 - __builtin_clz(static_cast<unsigned>(lvl_size) - 1)) : 0);
+    std::vector<MpzVector> levels;
+    levels.reserve(height);
+
+    level.reserve(lvl_size);
+    levels.push_back(std::move(level));
+    MpzVector next_level;
+    while (lvl_size > 1) {
+        next_level.clear();
+        next_level.reserve((lvl_size + 1) >> 1);
+
+        const auto& cur = levels.back();
+        for (size_t i = 0; i < lvl_size; i += 2) {
+            if (i + 1 < lvl_size) {
+                next_level.emplace_back(cur[i] * cur[i + 1]);
+            } else next_level.emplace_back(cur[lvl_size - 1]);
+        }
+
+        levels.push_back(std::move(next_level));
+        lvl_size = levels.back().size();
+    }
+    return levels;
 }
 
 std::vector<size_t> smoothCandidates(const std::vector<MpzVector>& p_levels, const U128Vector& X) {
@@ -98,17 +156,6 @@ std::vector<size_t> smoothCandidates(const std::vector<MpzVector>& p_levels, con
     }
     return smooth_cands;
 }
-
-namespace {
-inline uint32_t find_pow(mpz_class d, const mpz_class& P) {
-    uint32_t exp = 0;
-    do {
-        exp++;
-        d /= P;
-    } while (d % P == 0);
-    return exp;
-}
-} // namespace
 
 SparseList treeFactorize(const std::vector<MpzVector>& p_levels, u128 d_u128) {
     SparseList result;
@@ -141,33 +188,6 @@ SparseList treeFactorize(const std::vector<MpzVector>& p_levels, u128 d_u128) {
     return result;
 }
 
-namespace {
-
-int computeMaskBitlength(u128 p) {
-  return 128 - clz128(p - 2);
-}
-
-u128 computeMask(int mask_bitlength) {
-  return (mask_bitlength == 128) ? ~static_cast<u128>(0) : ((static_cast<u128>(1) << mask_bitlength) - 1);
-}
-
-// B = exp(C * sqrt(ln p * ln ln p)), C = 1/sqrt(2) -- see the smoothness-
-// bound discussion this project settled on: a fixed heuristic constant,
-// not a tuned/tabulated one.
-u128 computeSmoothnessBound(u128 p) {
-  const double C = 1.0 / std::sqrt(2.0);
-  const double ln_p = salgo::mp_ln(p);
-  const double ln_B = C * std::sqrt(ln_p * std::log(ln_p));
-  return static_cast<u128>(std::ceil(std::exp(ln_B)));
-}
-
-std::vector<MpzVector> productTreeForBound(u128 B) {
-  const std::vector<uint32_t> factor_base = gauss::sieveTo(static_cast<uint32_t>(B));
-  return buildProductTree(MpzVector(factor_base.begin(), factor_base.end()));
-}
-
-} // namespace
-
 ProblemParams::ProblemParams(u128 p) :
   p(p),
   p_prime(mont::inverse(p)),
@@ -181,34 +201,6 @@ ProblemParams::ProblemParams(u128 p) :
   smooth_density(std::exp(salgo::logDickman(salgo::mp_ln(p) / salgo::mp_ln(B)))),
   p_levels(productTreeForBound(B)),
   p_factorization(gauss::factorize(p)) {}
-
-namespace {
-
-// Uniform random value in [0, L] via rejection sampling: draw a full 128-bit
-// value, mask it down to L's bit range (mask is the caller-supplied all-ones
-// bitmask covering [0, L]), and retry on the rare draw that still lands
-// above L. Below 2^64, a single uniform_int_distribution draw suffices.
-u128 drawT(u128 L, u128 mask) {
-  thread_local std::random_device rd;
-  thread_local std::mt19937_64 gen(rd());
-
-  if (L <= std::numeric_limits<uint64_t>::max())
-    return std::uniform_int_distribution<uint64_t>(0, static_cast<uint64_t>(L))(gen);
-
-  u128 num;
-
-  do {
-    const uint64_t lo = std::uniform_int_distribution<uint64_t>(
-        0, std::numeric_limits<uint64_t>::max())(gen);
-    const uint64_t hi = std::uniform_int_distribution<uint64_t>(
-        0, std::numeric_limits<uint64_t>::max())(gen);
-    num = ((static_cast<u128>(hi) << 64) | static_cast<u128>(lo)) & mask;
-  } while (num > L);
-
-  return num;
-}
-
-} // namespace
 
 void addRelations(
     u128 base,
@@ -244,14 +236,3 @@ void addRelations(
 }
 
 } // namespace infra
-
-// Disabled along with the LinBox/Givaro includes/typedefs above -- see the
-// comment there. linSolveImpl/linSolve/dot_row/inv_mod/hensel_update/
-// garner_step/rank_relation_gf2/crtSolve are the entire untrusted
-// LinBox-based sparse solve + CRT/Hensel-lift pipeline; none of it is
-// exercised by anything outside this disabled block.
-#if 0
-
-
-
-#endif // LinBox/Givaro disabled
