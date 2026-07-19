@@ -253,11 +253,13 @@ void check_problem_params_invariants(u128 p) {
     for (const mpz_class& prime : params.p_levels[0]) expected_root *= prime;
     CHECK(params.p_levels.back()[0] == expected_root);
 
-    // p's own factorization reconstructs to p exactly.
+    // p_factorization is (p-1)'s factorization (needed downstream for
+    // CRT/Hensel lifting over the group order), not p's -- it must
+    // reconstruct to p-1 exactly.
     u128 reconstructed = 1;
     for (auto& [prime, exp] : params.p_factorization)
         for (uint32_t e = 0; e < exp; ++e) reconstructed *= prime;
-    CHECK(reconstructed == p);
+    CHECK(reconstructed == p - 1);
 
     CHECK(params.smooth_density > 0.0);
     CHECK(params.smooth_density <= 1.0);
