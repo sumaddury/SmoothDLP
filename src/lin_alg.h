@@ -134,26 +134,41 @@ size_t rankModPrime(const RelationMatrix& M, size_t n_cols, u128 q);
 
 /**
   Lifts a base solution of M*L === X (mod q) up to a solution mod q^e, via
-  e-1 rounds of Hensel lifting. q must be prime; q^e is intended to be one
-  prime-power factor of p-1 in this module's CRT/Hensel decomposition of the
-  full mod-(p-1) system. Internally this is e calls to solveModPrime against
-  the same q (one field, reused every level, matching solveModPrime's own
-  repeated-RHS design) rather than a solve against a growing modulus -- only
-  the right-hand side changes per level, never the field.
+  e-1 rounds of Hensel lifting, writing the result into L (sized to n_cols,
+  only meaningful when the return is OK). q must be prime; q^e is intended
+  to be one prime-power factor of p-1 in this module's CRT/Hensel
+  decomposition of the full mod-(p-1) system. Internally this is up to e
+  calls to solveModPrime against the same q (one field, reused every level,
+  matching solveModPrime's own repeated-RHS design) rather than a solve
+  against a growing modulus -- only the right-hand side changes per level,
+  never the field.
+
+  Returns whatever the first non-OK solveModPrime call along the way
+  returned (base solve or any correction step), OK if every level
+  succeeded. A base system that's rank-deficient mod q is NOT by itself a
+  reason for this to fail -- solveModPrime's own partial-rank contract
+  still applies at the base level. What CAN make a correction step
+  genuinely INCONSISTENT is a base-level kernel direction whose raw
+  (unreduced) coefficients aren't actually zero, only divisible by q --
+  such a column looks free at q^1 but still has real q^2-and-up structure,
+  and an arbitrary base-level choice for it is not guaranteed to be the one
+  a further lift needs. This is a real, if uncommon, failure mode of
+  Hensel-lifting a rank-deficient base solve, not a bug in the residual
+  arithmetic -- see this module's test suite for how often it actually
+  occurs and what resolves it. Callers must check the returned status
+  before trusting L; this function does not retry or paper over failure.
 
   X must be the genuine, unreduced integer right-hand side (not reduced mod
   q ahead of time): reducing it early would erase exactly the higher digits
   every level past the first needs to recover.
-
-  Returns L mod q^e as plain integers, one per factor-base column (index
-  matching n_cols/M's column indices).
 */
-U128Vector henselLift(
+SolveStatus henselLift(
     const RelationMatrix& M,
     const U128Vector& X,
     size_t n_cols,
     u128 q,
     int e,
+    U128Vector& L,
     Method method = Method::SparseElimination);
 
 } // namespace lin_alg

@@ -179,12 +179,13 @@ U128Vector modSpMV(const RelationMatrix& M, const U128Vector& L) {
 
 } // namespace
 
-U128Vector henselLift(
+SolveStatus henselLift(
     const RelationMatrix& M,
     const U128Vector& X,
     size_t n_cols,
     u128 q,
     int e,
+    U128Vector& L,
     Method method) {
 
     const Field F = makeField(q);
@@ -195,9 +196,10 @@ U128Vector henselLift(
     fillVector(b, F, X, q);
 
     Vector x(F, n_cols);
-    solveModPrime(A, x, b, q, method);
+    SolveStatus status = solveModPrime(A, x, b, q, method);
+    if (status != SolveStatus::OK) return status;
 
-    U128Vector L = getVector(F, x);
+    L = getVector(F, x);
     u128 q_k = q;
 
     for (int k = 1; k < e; k++) {
@@ -222,7 +224,8 @@ U128Vector henselLift(
         fillVector(r, F, R_k, q);
 
         Vector delta(F, n_cols);
-        solveModPrime(A, delta, r, q, method);
+        status = solveModPrime(A, delta, r, q, method);
+        if (status != SolveStatus::OK) return status;
 
         U128Vector D = getVector(F, delta);
         for (size_t col = 0; col < n_cols; ++col) L[col] += q_k * D[col];
@@ -230,7 +233,7 @@ U128Vector henselLift(
         q_k = q_k1;
     }
 
-    return L;
+    return SolveStatus::OK;
 }
 
 } // namespace lin_alg

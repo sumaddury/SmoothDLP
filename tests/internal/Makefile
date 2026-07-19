@@ -2,13 +2,14 @@
 # header that has complete, headered functions: montgomery.h, gauss_dream.h,
 # smooth_algos.h, infra.h.
 #
-# Most of these suites need only GMP (+ Boost for smooth_algos.h's Dickman-rho
-# asymptotic tail) plus a C++17 compiler: infra.cpp's old LinBox-based sparse
-# solve (linSolve/crtSolve/rank_relation_gf2) is still disabled (#if 0'd out in
-# infra.cpp). The one exception is test_lin_alg, which exercises src/lin_alg.cpp
-# and therefore does link LinBox/Givaro/NTL/FFLAS-FFPACK -- it has its own flags
-# and library list below. None of it touches setup.py/pybind11, so everything
-# here builds and runs independently of the Python extension.
+# test_montgomery/test_gauss_dream/test_smooth_algos need only GMP (+ Boost
+# for smooth_algos.h's Dickman-rho asymptotic tail) plus a C++17 compiler.
+# test_infra and test_lin_alg both link LinBox/Givaro/NTL/FFLAS-FFPACK --
+# infra.cpp's crtSolve calls into lin_alg (Hensel lift + CRT recombination
+# over p-1's factors) -- so they share LIN_ALG_FLAGS/LIN_ALG_LIBS below and
+# are both unity builds for the same reason (see LIN_ALG_SRC's comment).
+# None of it touches setup.py/pybind11, so everything here builds and runs
+# independently of the Python extension.
 #
 # Usage:
 #   conda env create -f ../../environment.yml   # once, if not already done
@@ -33,10 +34,16 @@ LIBS     := -lgmpxx -lgmp
 MONT_SRC := test_montgomery.cpp $(SRCDIR)/montgomery.cpp
 MONT_BIN := test_montgomery
 
-# ProblemParams (in infra.cpp) now computes its own smoothness bound and
-# factor base, so it calls into smooth_algos.cpp (mp_ln/logDickman) and
-# gauss_dream.cpp (sieveTo/factorize) -- both must link here too.
-INFRA_SRC := test_infra.cpp $(SRCDIR)/infra.cpp $(SRCDIR)/smooth_algos.cpp $(SRCDIR)/gauss_dream.cpp $(SRCDIR)/montgomery.cpp
+# ProblemParams (in infra.cpp) computes its own smoothness bound and factor
+# base, so it calls into smooth_algos.cpp (mp_ln/logDickman) and
+# gauss_dream.cpp (sieveTo/factorize) -- both must link here too. test_infra.cpp
+# itself unity-includes infra.cpp (which in turn unity-includes lin_alg.cpp --
+# see infra.cpp's own top-of-file comment, and test_infra.cpp's), so it needs
+# LIN_ALG_FLAGS/LIN_ALG_LIBS below, not the plain CXXFLAGS/LIBS the LinBox-free
+# suites use; infra.cpp/lin_alg.cpp are listed as prerequisites only, same as
+# test_lin_alg's rule, since they're pulled in via #include rather than
+# compiled as their own translation units here.
+INFRA_SRC := test_infra.cpp $(SRCDIR)/smooth_algos.cpp $(SRCDIR)/gauss_dream.cpp $(SRCDIR)/montgomery.cpp
 INFRA_BIN := test_infra
 
 GAUSS_SRC := test_gauss_dream.cpp $(SRCDIR)/gauss_dream.cpp $(SRCDIR)/montgomery.cpp
@@ -80,8 +87,8 @@ all: $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN)
 $(MONT_BIN): $(MONT_SRC) $(SRCDIR)/montgomery.h $(SRCDIR)/types.h
 	$(CXX) $(CXXFLAGS) $(MONT_SRC) -o $(MONT_BIN) $(LDFLAGS) $(LIBS)
 
-$(INFRA_BIN): $(INFRA_SRC) $(SRCDIR)/infra.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h $(SRCDIR)/smooth_algos.h $(SRCDIR)/gauss_dream.h
-	$(CXX) $(CXXFLAGS) $(INFRA_SRC) -o $(INFRA_BIN) $(LDFLAGS) $(LIBS)
+$(INFRA_BIN): $(INFRA_SRC) $(SRCDIR)/infra.cpp $(SRCDIR)/lin_alg.cpp $(SRCDIR)/lin_alg.h $(SRCDIR)/infra.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h $(SRCDIR)/smooth_algos.h $(SRCDIR)/gauss_dream.h
+	$(CXX) $(LIN_ALG_FLAGS) $(INFRA_SRC) -o $(INFRA_BIN) $(LDFLAGS) $(LIN_ALG_LIBS)
 
 $(GAUSS_BIN): $(GAUSS_SRC) $(SRCDIR)/gauss_dream.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h
 	$(CXX) $(CXXFLAGS) $(GAUSS_SRC) -o $(GAUSS_BIN) $(LDFLAGS) $(LIBS)

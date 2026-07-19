@@ -24,27 +24,58 @@ a plan that was abandoned, not the current code.
 ```
 src/            C++ core, compiled into the smooth._core pybind11 extension
   types.h         u128 typedef, mpz_class<->u128 helpers, clz128/ctz128/popcount128
-  montgomery.h/.cpp   128-bit modular-arithmetic backend (mul, reduce, Montgomery REDC) — implemented + fully tested, but not yet reachable from Python, see below
+  montgomery.h/.cpp   128-bit modular-arithmetic backend (mul, reduce, Montgomery REDC) —
+                      implemented, fully tested, and wired into setup.py; reachable from Python
+                      transitively (gauss_dream/infra call it), not bound directly itself
   gauss_dream.cpp/h   sieveTo, isPrime (Miller-Rabin via Montgomery), factorize_naive, squfof, factorize
   smooth_algos.cpp/h  isSmooth, logDickman (Dickman rho), mp_ln, log_mul, psiApprox (uses dickman_table.bin)
-  infra.cpp/h         buildProductTree/smoothCandidates/treeFactorize (Bernstein batch-smoothness),
-                      linSolve/crtSolve (LinBox sparse solve + CRT/Hensel over factors of p-1), rank_relation_gf2
+  lin_alg.cpp/h       raw LinBox layer: solveModPrime/rankModPrime (GF(q) sparse solve/rank,
+                      SparseElimination or Wiedemann) + henselLift (lifts a base GF(q) solve to
+                      q^e via e-1 correction rounds). Not a setup.py source on its own -- pulled
+                      into infra.cpp via #include "lin_alg.cpp" (unity build, see below); not
+                      bound in core.cpp, so unreachable from Python.
+  infra.cpp/h         buildProductTree/smoothCandidates/treeFactorize (Bernstein batch-smoothness,
+                      bound in core.cpp) + ProblemParams/addRelations/crtSolve (the double-index-
+                      calculus relation-collection + CRT/Hensel solve layer, built on lin_alg.cpp,
+                      not yet bound in core.cpp -- see "Module status" below)
   core.cpp            pybind11 bindings -> smooth._core
   __init__.py          Python-facing `smooth` package surface
 tests/
   test_gauss_dream.py, test_infra.py, test_smooth_algos.py   pytest, run against the built extension
   conftest.py           reference/oracle implementations used by the above
-  internal/             standalone C++ test suite for montgomery.{h,cpp} only (no LinBox/pybind11 needed)
-    test_montgomery.cpp, Makefile  -- `make -C tests/internal test`
-scripts/        gitignored scratch area: legacy debug artifacts (temp.txt, rank_test.txt,
-                test_linbox_u64.cpp, data_collect.cpp, sweep_results.csv) from an earlier
-                LinBox rank-deficiency investigation. Not part of the build; historical only.
+  internal/             standalone C++ test suites, one per header with complete functions:
+                        test_montgomery, test_gauss_dream, test_smooth_algos (GMP-only), plus
+                        test_infra and test_lin_alg (link LinBox/Givaro/NTL/FFLAS-FFPACK too).
+                        `make -C tests/internal test` builds + runs all five. Independent of
+                        setup.py/pybind11 -- these link straight against GMP/LinBox, no Python.
+scripts/        gitignored scratch area: legacy debug/investigation artifacts from earlier LinBox
+                rank-deficiency work. Not part of the build; historical only.
 texts/          reference PDFs. Only 2409.08784v1.pdf (the paper) is authoritative; rest is
                 background reading or the stale original plan (see warning above).
-notebooks/      prototyping notebooks (primality -> factoring -> smoothness), predate the C++ port
-setup.py        builds smooth._core. Sources: core.cpp, gauss_dream.cpp, smooth_algos.cpp, infra.cpp
+setup.py        builds smooth._core. Sources: core.cpp, gauss_dream.cpp, smooth_algos.cpp,
+                infra.cpp, montgomery.cpp. (lin_alg.cpp is not listed -- it's unity-included by
+                infra.cpp, see below, so it has no separate translation unit.)
 environment.yml conda env `smoothnumbers-dev`: gmp, ntl, givaro, fflas-ffpack, linbox, boost, pybind11
 ```
+
+### Unity-build requirement around `lin_alg.h`
+
+Any two translation units that both transitively include `lin_alg.h`'s LinBox matrix/vector
+headers and get linked into the same binary hit ~60 duplicate-symbol errors at link time —
+LinBox's `commentator.h`/`args-parser.h` define several symbols out-of-line without `inline`.
+The fix used throughout this codebase is `#include` the `.cpp` directly instead of the `.h`, so
+everything stays in one translation unit: `infra.cpp` does `#include "lin_alg.cpp"` (not
+`lin_alg.h`), and `tests/internal/test_lin_alg.cpp`/`test_infra.cpp` each `#include` their
+matching `.cpp` for the same reason. Don't "clean this up" into separate compiled objects
+without re-checking the link still succeeds.
+
+### Compiler-selection gotcha
+
+The plain `c++`/`g++` on this machine resolves to Homebrew's `g++-16` (libstdc++ ABI), which is
+ABI-incompatible with the conda-forge-built LinBox/Givaro/NTL (libc++ ABI). `setup.py` already
+handles this by pointing `CXX`/`CC` at the conda env's `*-apple-darwin*-clang++`. If you ever
+compile anything by hand (outside `setup.py`/`tests/internal/Makefile`, which both do this
+correctly already), use that same conda clang++, not a bare `c++`/`g++`.
 
 ## Build & test
 
@@ -53,97 +84,76 @@ conda activate smoothnumbers-dev            # provides GMP/NTL/LinBox/Givaro/FFL
 python setup.py build_ext --inplace          # builds src/_core.cpython-*.so
 python -m pytest tests/ -q                   # Python-level tests (skipped if smooth fails to import)
 
-make -C tests/internal test                  # standalone montgomery.{h,cpp} suite (GMP-only, no conda extension needed)
+make -C tests/internal test                  # all 5 standalone C++ suites (needs the conda env
+                                              # active for LinBox/Givaro/NTL -- see Makefile)
 ```
-
-## Current status (2026-07-11, updated same day) — read before editing montgomery.*
-
-**Update: `montgomery.h/.cpp` is now fully implemented and fully tested.**
-`mulmod`, `pow2mod_odd`, and `pow2mod` all landed (the `pow2mod` family
-collapsed from a planned three-piece odd/any/dispatcher split down to just
-two functions — see "Design notes" below for the current shape). All 9
-`mont::` functions have edge-case + randomized-vs-GMP-oracle tests in
-`tests/internal/test_montgomery.cpp` (22 sections, 222k+ checks, all
-passing via `make -C tests/internal test`). Points 1, 3, and 4 from the
-original version of this status section are resolved; **point 2 (below) is
-now the sole remaining blocker** for the whole project.
-
-1. **`setup.py` still never lists `src/montgomery.cpp` as a build source —
-   this is now the only reason the project doesn't build/import/test
-   end-to-end.** The compiled `smooth._core` extension links "successfully"
-   (macOS `-undefined dynamic_lookup` defers symbol resolution) but **fails
-   at import time** with `symbol not found in flat namespace
-   '__ZN4mont15r_squared_mod_nEo'` — every `mont::` symbol gauss_dream.cpp/
-   infra.cpp reference is missing from the shared object, because
-   `montgomery.cpp` itself is never compiled into it. `tests/conftest.py`
-   uses `pytest.importorskip("smooth")`, but since the failure happens while
-   *loading conftest itself*, pytest reports a collection **error**, not a
-   skip — the whole suite still errors out at collection. **The fix is a
-   one-line addition** to `setup.py`'s `sources=[...]` list; do this next.
-2. Stray editor autosave files still sit untracked in `src/`
-   (`##montgomery.cpp##`, `#montgomery.h#` — the emacs lock file and one
-   autosave from earlier have since cleared on their own). Harmless, not
-   part of the build, but consider adding an emacs-autosave `.gitignore`
-   pattern so they stop showing up in `git status`.
-3. **`infra.h` is missing declarations for `linSolve`/`crtSolve`/
-   `rank_relation_gf2`** — all three are defined in `infra.cpp` but not
-   declared in the header, not bound in `core.cpp`, and not covered by any
-   test. They implement the CRT+Hensel-lift sparse solve over factors of
-   `p-1` (LinBox `Wiedemann`/`SparseElimination`) and are load-bearing for the
-   whole project's endgame, but currently dangling/unverified code with no
-   way to exercise them short of writing a new C++ harness or wiring them
-   into `core.cpp`.
-4. **The actual "double" algorithm orchestration doesn't exist in `src/` at
-   all**: no relation-collection loop, no generator-finder, no smoothness-
-   bound heuristic, no g-side/b-side dual channel, no overlap-finder, no
-   `x ≡ α·β⁻¹ (mod p-1)` step. (An earlier prototype of this — `dlp.cpp`,
-   `bench_helpers.cpp` — existed before the "restructure and cleanup" commit
-   and is gone now; `texts/PROJECT_BRIEFING.md` describes that old, now-
-   nonexistent layout — treat it as historical context on the *math*, not
-   as a map of current files.) This is the paper's actual contribution and is
-   the biggest remaining chunk of work, but it's blocked on point 1 above —
-   nothing downstream of montgomery is reachable from Python until that's
-   fixed.
 
 ## Module status: what's ready / blocked / missing
 
-(Note: this section tracks *implementation progress*, not call-frequency —
-see "Design notes" below for the HOT/WARM/COLD performance classification.)
-
-- **Done, but not yet reachable from Python — this is the active blocker**:
-  - `montgomery.h/.cpp` — all 9 functions implemented and fully tested in
-    isolation (`make -C tests/internal test`). Not yet added to `setup.py`'s
-    `sources=[...]`, so `smooth._core` can't actually use it yet (see status
-    point 1 above). This is now a build-config fix, not an algorithm task.
-
-- **Implemented + has test coverage, but currently blocked/unverified until
-  montgomery is wired into `setup.py`**:
+- **Done, tested, reachable from Python (bound in `core.cpp`)**:
+  - `montgomery.h/.cpp` — all 9 functions, wired into `setup.py`'s
+    `sources=[...]`. Not bound directly (no `mont::` Python entry points),
+    but reachable transitively through everything below that calls it.
   - `gauss_dream.cpp` (`isPrime`, `factorize_naive`, `squfof`, `factorize`,
-    `sieveTo`) — fully written, has `tests/test_gauss_dream.py`, but `isPrime`
-    calls `mont::mulmod` for any `n > 1,000,000`, so it's non-functional until
-    montgomery is reachable (see status point 1).
-  - `smooth_algos.cpp` (`isSmooth`, `logDickman`, `psiApprox`, `mp_ln`,
-    `log_mul`) — fully written, has `tests/test_smooth_algos.py`, transitively
-    blocked because `isSmooth` calls `isPrime`.
-  - `infra.cpp::buildProductTree` / `treeFactorize` — done, tested
-    (`tests/test_infra.py`), **not** blocked by montgomery (pure GMP product-
-    tree/gcd work).
-  - `infra.cpp::smoothCandidates` — implemented, tested, but directly calls
-    `mont::pow2mod`, so it's blocked the same way `isPrime` is.
-  - `infra.cpp::linSolve` / `crtSolve` / `rank_relation_gf2` — implemented
-    (LinBox Wiedemann/SparseElimination + CRT/Hensel), but undeclared in
-    `infra.h`, unbound in `core.cpp`, and **zero automated test coverage**.
-    Correctness was never confirmed even in the prior iteration of this code
-    (see `texts/PROJECT_BRIEFING.md` §9 for the historical rank-deficiency
-    investigation this traces back to) — treat as unverified, not done.
+    `sieveTo`) and `smooth_algos.cpp` (`isSmooth`, `logDickman`, `psiApprox`,
+    `mp_ln`, `log_mul`) — fully working end-to-end, `tests/test_gauss_dream.py`
+    / `tests/test_smooth_algos.py` pass against the built extension.
+  - `infra.cpp::buildProductTree` / `smoothCandidates` / `treeFactorize` —
+    Bernstein batch-smoothness testing, tested (`tests/test_infra.py`).
+
+- **Done and tested (`make -C tests/internal test`, see `test_lin_alg.cpp` /
+  `test_infra.cpp`), but not yet bound in `core.cpp` — unreachable from
+  Python**:
+  - `lin_alg.cpp` (`solveModPrime`, `rankModPrime`, `henselLift`) — the raw
+    GF(q) solve/rank layer plus Hensel lifting from a base solve up to q^e.
+    See doc comments in `lin_alg.h` for the `SolveStatus`/`MAX_MODULUS`
+    contract and why the field type is `Givaro::Modular<RecInt::ruint<7>>`
+    specifically (a different-looking but "equivalent" LinBox field silently
+    returns wrong solves above q ~ 2^32 — do not swap it, see the comment in
+    `lin_alg.h` and the memory note on this).
+  - `infra.cpp` (`ProblemParams`, `addRelations`, `crtSolve`) — the
+    relation-collection + CRT/Hensel-over-factors-of-(p-1) solve layer, built
+    on `lin_alg.cpp`. See doc comments in `infra.h` for the full contract,
+    in particular: `crtSolve` returns an **empty vector** if `henselLift`
+    fails on any single factor of p-1 (not an exception, not a partial
+    result — check for empty), and `addRelations`' `base` argument has an
+    **unchecked precondition** that it be a genuine primitive root mod p (see
+    "Primitive-root precondition" below) — this is a real, common failure
+    mode if violated, not a rare edge case.
+  - Binding this layer into `core.cpp` (mirroring the `buildProductTree`/
+    `smoothCandidates`/`treeFactorize` pattern already there) is a
+    reasonably mechanical next step whenever Python-side access is needed.
 
 - **Not started — no code exists yet**:
   - The dual-channel double-index-calculus driver itself: generator search,
-    smoothness-bound selection, g-side/b-side relation collection loops, the
-    overlap-finder comparing partial log tables, and the final
-    `x ≡ α·β⁻¹ (mod p-1)` combination. This is the paper's actual novel
-    contribution (§III of `2409.08784v1.pdf`) and doesn't exist anywhere in
-    `src/` right now.
+    smoothness-bound selection, g-side/b-side relation collection loops
+    running concurrently, the overlap-finder comparing partial log tables
+    across both sides, and the final `x ≡ α·β⁻¹ (mod p-1)` combination. This
+    is the paper's actual novel contribution (§III of `2409.08784v1.pdf`)
+    and is the biggest remaining chunk of work — `addRelations`/`crtSolve`
+    are the building blocks it will be assembled from, one side at a time,
+    but nothing wires the two sides together yet.
+
+## Primitive-root precondition on `addRelations`' `base`
+
+`addRelations(base, ...)` requires `base` to be a genuine primitive root mod
+`p` (order exactly p-1), whether it's playing the "g" or "b" role — the two
+roles go through the identical code path, confirmed by direct testing of
+both. This is **not validated by the code** (matching this codebase's
+general precondition philosophy: it is not `addRelations`' job to validate
+its contract, the same way `std::lower_bound` does not verify its range is
+sorted). If violated, `base^t mod p` only ever ranges over the proper
+subgroup `base` generates, which caps what `crtSolve`'s linear system can
+learn about factor-base primes outside that subgroup's structure. This
+produces a **permanent rank ceiling on some factor of p-1** that persists no
+matter how many relations are collected (confirmed directly: 100+ relations
+past the minimum, still deficient) — distinct from ordinary statistical rank
+deficiency, which is transient and reliably clears by roughly 3x the
+factor-base size k (also confirmed directly, across multiple primes and
+factor shapes; see `tests/internal/test_infra.cpp`'s k-relative
+failure-rate/rank sweep). If `crtSolve` keeps returning empty well past a
+few multiples of k, check whether `base` is actually a primitive root before
+assuming more relations will help.
 
 ## Design notes: the `pow2mod` family
 

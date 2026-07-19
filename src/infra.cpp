@@ -2,6 +2,15 @@
 #include "smooth_algos.h"
 #include "gauss_dream.h"
 #include "infra.h"
+// Unity-included, not a normal header include: LinBox's commentator/
+// args-parser machinery is pulled in transitively by even lin_alg.h's base
+// matrix/vector headers, and defines several symbols out-of-line without
+// `inline` in this LinBox build -- so any second translation unit that also
+// includes lin_alg.h and gets linked into the same binary hits ~60
+// duplicate-symbol errors (see lin_alg.cpp's own top-of-file comment, and
+// tests/internal/Makefile). Including the .cpp directly keeps this file and
+// lin_alg's implementation in one translation unit and sidesteps that.
+#include "lin_alg.cpp"
 #include "montgomery.h"
 #include <random>
 #include <cstdint>
@@ -202,6 +211,8 @@ ProblemParams::ProblemParams(u128 p) :
   p_levels(productTreeForBound(B)),
   p_factorization(gauss::factorize(p - 1)) {}
 
+constexpr int WIEDEMANN_THRESHOLD = 4000;
+
 void addRelations(
     u128 base,
     const ProblemParams& params,
@@ -233,6 +244,123 @@ void addRelations(
 
     added += smooth_x.size();
   }
+}
+
+/**
+  q^e via binary exponentiation. e is a factor-power exponent (bounded by
+  log2 of p-1, so at most ~128 even in the most pathological u128 case, far
+  fewer iterations in practice), and the result is one of p-1's own
+  prime-power factors, so it never exceeds p-1 -- both comfortably exact in
+  u128 with no risk of overflow.
+*/
+inline u128 binExp(u128 q, int e) {
+    u128 base = q;
+    u128 accum = 1;
+
+    while (e) {
+        if (e & 1) accum *= base;
+        base *= base;
+        e >>= 1;
+    }
+
+    return accum;
+}
+
+/**
+  Modular inverse of P_prev mod n = q^e, where P_prev is the product of
+  p-1's OTHER prime-power factors processed so far in crtSolve's CRT loop
+  below -- guaranteed coprime to n, since p-1's distinct prime factors are
+  never repeated across factors.
+
+  q == 2 is handled separately: Euler's theorem needs phi(n), which for
+  n = 2^e is a power of two itself and gcd(P_prev, n) = 1 is guaranteed the
+  same way, but there's a cheaper route. mont::inverse(P_prev) computes
+  P_prev^-1 mod 2^128 (valid since P_prev is odd whenever q == 2, being a
+  product of the OTHER, necessarily-odd prime-power factors); a 2-adic
+  inverse's low e bits are exactly its inverse mod 2^e (this is the same
+  fact that makes Newton's-method doubling-precision inverse computation
+  work at all), so masking down to e bits is exact, not an approximation.
+
+  For odd q, Euler's theorem applies directly: phi(q^e) = q^(e-1)*(q-1), and
+  P_prev^(phi-1) mod n is P_prev^-1 mod n whenever gcd(P_prev, n) = 1.
+*/
+inline u128 modInv(u128 P_prev, u128 q, int e, u128 n) {
+    if (q != 2) {
+        const u128 phi = binExp(q, e - 1) * (q - 1);   // Euler's totient of a prime power
+        const u128 n_prime = mont::inverse(n);
+        const u128 r2 = mont::r_squared_mod_n(n);
+
+        return mont::powmod_odd(P_prev % n, phi - 1, n, n_prime, r2);
+    } else {
+        return mont::inverse(P_prev) & (((u128)1 << e) - 1);
+    }
+}
+
+U128Vector crtSolve(
+    const ProblemParams& params,
+    const RelationMatrix& M,
+    const U128Vector& X) {
+    std::vector<std::pair<U128Vector, u128>> bases;
+    bases.reserve(params.p_factorization.size());
+
+    const size_t n_cols = params.p_levels[0].size();
+    const lin_alg::Method method = (
+        (n_cols == M.size() && n_cols >= WIEDEMANN_THRESHOLD) ?
+        lin_alg::Method::Wiedemann :
+        lin_alg::Method::SparseElimination);
+
+    for (auto [q, e] : params.p_factorization) {
+        U128Vector L;
+        // henselLift can genuinely fail to reach q^e for a rank-deficient
+        // base factor (see lin_alg.h's doc on henselLift for why); there is
+        // no partial/best-effort result to salvage from that -- the honest
+        // answer is "not solvable from this relation set", signaled by
+        // returning empty, not by CRT-combining a corrupted L.
+        if (lin_alg::henselLift(M, X, n_cols, q, e, L, method) != lin_alg::SolveStatus::OK)
+            return {};
+        bases.emplace_back(std::move(L), binExp(q, e));
+    }
+
+    U128Vector C;
+    u128 P;
+
+    std::tie(C, P) = bases[0];
+
+    for (size_t iter = 1; iter < params.p_factorization.size(); ++iter) {
+        auto& [L, n] = bases[iter];
+        auto [q, e] = params.p_factorization[iter];
+
+        const u128 P_inv = modInv(P, q, e, n);
+        U128Vector t(L.size());
+
+        for (size_t i = 0; i < L.size(); ++i) {
+            // L[i] and (C[i] mod n) are each < n here, but n itself can be
+            // close to p-1's own full size (a single large prime-power
+            // factor), so their product with P_inv -- each also < n --
+            // can exceed u128 (n^2 can be ~150 bits for a ~75-bit factor).
+            // mont::mulmod_any reduces mod n via a full 256-bit product
+            // instead of a native u128 multiply, so it doesn't overflow.
+            // The subtraction has the same issue lin_alg::henselLift's
+            // residual step does: nothing orders L[i] against C[i] mod n,
+            // so an explicit wraparound replaces unsigned underflow. Unlike
+            // henselLift's residual (where both operands share q^(k+1) as
+            // their natural modulus), C[i]'s natural bound here is P, not
+            // n, so it must be reduced mod n before the comparison even
+            // makes sense.
+            const u128 c_mod_n = C[i] % n;
+            const u128 diff = (L[i] >= c_mod_n) ? (L[i] - c_mod_n) : (L[i] + n - c_mod_n);
+            t[i] = mont::mulmod_any(diff, P_inv, n);
+        }
+
+        // P and n are distinct factors of p-1, so P*n is itself a divisor
+        // of p-1 and fits comfortably in u128 -- unlike the product above,
+        // this one is safe as a native multiply.
+        for (size_t i = 0; i < L.size(); ++i) C[i] += P * t[i];
+
+        P *= n;
+    }
+
+    return C;
 }
 
 } // namespace infra

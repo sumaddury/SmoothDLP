@@ -1,22 +1,22 @@
 // Standalone correctness tests for the complete, headered functions in
-// src/infra.{h,cpp}: buildProductTree, smoothCandidates, treeFactorize.
-//
-// (linSolve/crtSolve/rank_relation_gf2 are disabled in infra.cpp -- the
-// LinBox/Givaro integration they depend on isn't trusted yet, and they were
-// never declared in infra.h to begin with. Nothing here touches them.)
+// src/infra.{h,cpp}: buildProductTree, smoothCandidates, treeFactorize,
+// ProblemParams, addRelations, and crtSolve.
 //
 // infra.{h,cpp} depends on montgomery.h (smoothCandidates calls mont::pow2mod
-// /mont::gcd), so this suite links montgomery.cpp too, but -- now that the
-// LinBox-based code is disabled -- needs nothing beyond GMP, same as
-// test_montgomery.cpp. See the Makefile in this directory for the exact
-// build command (`make -C tests/internal test`).
+// /mont::gcd) and, since crtSolve calls into lin_alg::henselLift, on LinBox/
+// Givaro/NTL/FFLAS-FFPACK too. This file unity-includes infra.cpp directly
+// (not just infra.h) for the same reason infra.cpp itself unity-includes
+// lin_alg.cpp: some tests here call lin_alg::rankModPrime directly (to
+// characterize crtSolve's failure mode against rank), and infra.h doesn't
+// expose lin_alg's types/declarations -- getting them via a normal
+// "#include lin_alg.h" here, alongside infra.cpp's own unity-include of it,
+// would be a second translation unit pulling in the same LinBox commentator
+// machinery, hitting the ~60 duplicate-symbol errors documented in
+// lin_alg.cpp's top-of-file comment. Unity-including infra.cpp keeps
+// everything in one TU instead. See the Makefile in this directory for the
+// exact build command (`make -C tests/internal test`).
 
-#include "infra.h"
-#include "montgomery.h"
-#include "gauss_dream.h"
-#include "types.h"
-
-#include <gmpxx.h>
+#include "infra.cpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -346,6 +346,293 @@ void test_add_relations_larger_prime_still_reconstructs() {
     }
 }
 
+// ---- infra::crtSolve -------------------------------------------------------
+//
+// Contract: crtSolve(params, M, X) solves M*L === X (mod p-1) by Hensel
+// lifting each of p-1's prime-power factors independently (lin_alg::
+// henselLift) and CRT-recombining (Garner's algorithm) the results into one
+// solution mod p-1. As with lin_alg::solveModPrime, rank deficiency is not
+// an error -- the returned L must satisfy every row, and must equal the
+// planted solution exactly on every coordinate outside whatever kernel a
+// factor's solve had.
+
+// Rows of M*C === X (mod p-1) that C fails to satisfy -- the infra-level
+// analogue of lin_alg's own unsatisfiedRows test helper, checked against
+// the composite modulus p-1 (never itself passed to a field solve, but
+// still a well-defined thing to check a candidate solution against).
+std::vector<size_t> unsatisfied_rows_mod_p_minus_1(const RelationMatrix& M, const U128Vector& X,
+                                                    const U128Vector& C, u128 p_minus_1) {
+    std::vector<size_t> bad;
+    if (X.size() != M.size()) {
+        for (size_t i = 0; i < M.size(); ++i) bad.push_back(i);
+        return bad;
+    }
+    for (size_t i = 0; i < M.size(); ++i) {
+        u128 acc = 0;
+        bool in_range = true;
+        for (const auto& entry : M[i]) {
+            if (entry.first >= C.size()) { in_range = false; break; }
+            u128 coeff = (u128)entry.second % p_minus_1;
+            acc = (acc + (coeff * C[entry.first]) % p_minus_1) % p_minus_1;
+        }
+        if (!in_range || acc != X[i] % p_minus_1) bad.push_back(i);
+    }
+    return bad;
+}
+
+u128 crt_random_below(u128 q) {
+    uint64_t hi = rng(), lo = rng();
+    return ((((u128)hi << 64) | (u128)lo) % (q - 1)) + 1;
+}
+
+// Builds an (n_cols + extra_rows) x n_cols sparse system over params' own
+// factor base, with a planted L_true mod p-1 and X set to the reduced dot
+// product -- the shape crtSolve's tests need, since it solves mod the
+// composite p-1, not a single prime q the way lin_alg's own buildSystem
+// does.
+struct CrtSystem {
+    RelationMatrix M;
+    U128Vector X;
+    U128Vector L_true;
+};
+
+CrtSystem build_crt_system(const ProblemParams& params, size_t extra_rows, int weight) {
+    const size_t n = params.p_levels[0].size();
+    const u128 p_minus_1 = params.p - 1;
+    const size_t m = n + extra_rows;
+
+    CrtSystem s;
+    s.M.assign(m, SparseList{});
+    for (size_t i = 0; i < m; ++i) {
+        s.M[i].push_back({(i * 7) % n, (uint32_t)(1 + rng() % 1000)});
+        for (int k = 0; k < weight; ++k)
+            s.M[i].push_back({rng() % n, (uint32_t)(1 + rng() % 1000)});
+    }
+    s.L_true.resize(n);
+    for (size_t j = 0; j < n; ++j) s.L_true[j] = crt_random_below(p_minus_1);
+    s.X.assign(m, 0);
+    for (size_t i = 0; i < m; ++i) {
+        u128 acc = 0;
+        for (const auto& e : s.M[i])
+            acc = (acc + ((u128)e.second % p_minus_1) * s.L_true[e.first]) % p_minus_1;
+        s.X[i] = acc;
+    }
+    return s;
+}
+
+// crtSolve now returns an EMPTY vector when henselLift can't reach full
+// precision for some factor (see infra.h's doc) -- a real, data-dependent
+// possibility, not a bug. These tests assert success for their specific,
+// already-observed-to-work inputs (a regression pin), but check emptiness
+// explicitly rather than running row checks against an empty C. The
+// dedicated statistics test below is what actually characterizes how often
+// empty happens and whether more relations fixes it -- these are not the
+// tests for that question.
+
+// crt_solve_failure_vs_rank_by_relation_multiple (below) measures this
+// directly: failure rate reaches a stable 0% at m=3k (three times the
+// factor-base size) across every prime tested, and stays there through
+// 30k -- never creeps back up. These regression tests build their systems
+// at 3k+ accordingly, not at an arbitrary absolute row count (an earlier
+// version of this file used absolute extra_rows values, which turned out
+// to mean wildly different things for a k=6 factor base vs a k=64 one --
+// exactly the flaw the k-relative statistics test below was written to
+// stop hiding).
+
+void test_crt_solve_recovers_planted_solution_small_prime() {
+    // p = 1009: p-1 = 1008 = 2^4 * 3^2 * 7 -- three distinct prime-power
+    // factors, two of them with exponent > 1, so this exercises both the
+    // multi-factor CRT recombination and multi-level Hensel lifting in one
+    // hand-verifiable case.
+    ProblemParams params(1009);
+    const size_t k = params.p_levels[0].size();
+    CrtSystem s = build_crt_system(params, /*extra_rows=*/2 * k, /*weight=*/3);
+
+    U128Vector C = crtSolve(params, s.M, s.X);
+    CHECK(!C.empty());
+    CHECK(unsatisfied_rows_mod_p_minus_1(s.M, s.X, C, params.p - 1).empty());
+    CHECK(C == s.L_true);
+}
+
+void test_crt_solve_matches_planted_solution_across_prime_sizes() {
+    // A spread across the paper's target range, matching
+    // test_problem_params_invariants_across_prime_sizes' choices -- p-1's
+    // factorization shape (how many distinct primes, how large the
+    // exponents) varies a lot across these, which is exactly what exercises
+    // different paths through the CRT loop and Hensel lift depths.
+    const u128 primes[] = {
+        (u128)1009,
+        (u128)8191,                          // p-1 = 8190 = 2*3^2*5*7*13
+        (u128)524287,                        // p-1 = 2*3*7*11*31*41
+        (u128)2147483647ULL,                 // p-1 = 2*3*7*11*31*151*331
+    };
+    for (u128 p : primes) {
+        ProblemParams params(p);
+        const size_t k = params.p_levels[0].size();
+        CrtSystem s = build_crt_system(params, /*extra_rows=*/2 * k, /*weight=*/3);
+
+        U128Vector C = crtSolve(params, s.M, s.X);
+        CHECK(!C.empty());
+        CHECK(unsatisfied_rows_mod_p_minus_1(s.M, s.X, C, params.p - 1).empty());
+        CHECK(C == s.L_true);
+    }
+}
+
+void test_crt_solve_handles_rectangular_overdetermined() {
+    ProblemParams params(1009);
+    const size_t k = params.p_levels[0].size();
+    CrtSystem s = build_crt_system(params, /*extra_rows=*/3 * k, /*weight=*/5);
+
+    U128Vector C = crtSolve(params, s.M, s.X);
+    CHECK(!C.empty());
+    CHECK(unsatisfied_rows_mod_p_minus_1(s.M, s.X, C, params.p - 1).empty());
+    CHECK(C == s.L_true);
+}
+
+// End-to-end: real relations from addRelations (not a synthetic planted
+// system), solved by crtSolve. There's no independently-known L_true here
+// -- the check is that whatever crtSolve returns satisfies every relation
+// addRelations actually produced, mod the real p-1, which is the only thing
+// that matters once relations come from genuine smooth values rather than a
+// hand-planted system.
+//
+// addRelations itself only ever collects the bare minimum (>= k rows) --
+// exactly the m=1k regime the statistics test below shows failing 73-93% of
+// the time. Getting a reliable relation set is this test's caller's job,
+// same as it would be for any real driver built on top of crtSolve: call
+// addRelations repeatedly until comfortably past 3k, not once.
+//
+// base MUST be a genuine primitive root mod p for this to ever converge --
+// addRelations/crtSolve do not check this (nor should they: it's the
+// caller's precondition to satisfy, the same way std::lower_bound doesn't
+// verify its range is sorted). base=2 is NOT a primitive root mod 1009
+// (confirmed by direct order check) and produces a PERMANENT rank ceiling
+// no amount of retrying clears -- found by exactly this test, originally
+// written with base=2 by mistake. base=11 below is a confirmed primitive
+// root mod 1009. k=6 is still tiny enough that a single draw can land
+// rank-deficient by ordinary chance even with a real generator (the
+// statistics test below averages over many trials to characterize that;
+// a single real run doesn't get that luxury), which is what the retry loop
+// here is actually for now.
+void test_crt_solve_on_real_relations_from_add_relations() {
+    u128 p = 1009, base = 11;
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
+    RelationMatrix M;
+    U128Vector X;
+    while (M.size() < 3 * k) addRelations(base, params, M, X);
+
+    U128Vector C = crtSolve(params, M, X);
+    int retries = 0;
+    while (C.empty() && retries < 10) {
+        addRelations(base, params, M, X);
+        C = crtSolve(params, M, X);
+        ++retries;
+    }
+    std::cout << "  [diag] resolved after " << retries << " retr" << (retries == 1 ? "y" : "ies")
+              << ", final M.size()=" << M.size() << "\n";
+    if (C.empty()) {
+        for (auto& [q, e] : params.p_factorization) {
+            if (e < 2) continue;
+            size_t rank = lin_alg::rankModPrime(M, k, q);
+            std::cout << "  [diag] STILL failing: factor q=" << (uint64_t)q << " e=" << e
+                      << " rank=" << rank << "/" << k << "\n";
+        }
+    }
+    CHECK(!C.empty());
+    CHECK(unsatisfied_rows_mod_p_minus_1(M, X, C, params.p - 1).empty());
+}
+
+// ---- crtSolve: failure-rate characterization -------------------------------
+//
+// crtSolve returns empty when henselLift can't reach full precision for some
+// factor -- a rank-deficient base solve whose kernel direction has raw
+// coefficients divisible by q but not q^2 (see lin_alg.h's henselLift doc).
+// This is NOT hypothetical: it was found via exactly this kind of testing,
+// on real synthetic data derived from an actual ProblemParams(524287). Two
+// things need to be true for "return empty, let the caller add relations"
+// to be an acceptable fix rather than a silent-failure-shaped one:
+//   1. it must be genuinely uncommon, not the common case -- if double
+//      index calculus's whole premise is relation sets barely past the
+//      minimum k, and this failure hit routinely, "just add relations"
+//      wouldn't be a real fix, it'd be a euphemism for "doesn't work".
+//   2. it must actually resolve when more relations are added -- if it
+//      didn't, "add relations and retry" would be advice that never
+//      terminates.
+// Both are checked here, empirically, across a spread of primes and factor
+// shapes, not assumed.
+
+// Relation count expressed in units of k (the factor-base size), since k
+// itself varies enormously across primes (single digits for p=1009, in the
+// hundreds for p=2147483647) -- an absolute row count like "extra_rows=30"
+// means something completely different for each, which is what made the
+// earlier version of this test meaningless to compare across primes.
+//
+// Also tracks rank at each step, for every factor with e>=2 (only those can
+// ever trigger this failure -- an e=1 factor never enters henselLift's
+// correction loop at all), to answer directly: does the failure rate hit
+// zero exactly when those factors reach full column rank, or does it clear
+// up earlier?
+void test_crt_solve_failure_vs_rank_by_relation_multiple() {
+    const u128 primes[] = {(u128)1009, (u128)524287, (u128)2147483647ULL};
+    const int multipliers[] = {1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 30};
+    const int trials = 15;
+
+    for (u128 p : primes) {
+        ProblemParams params(p);
+        const size_t k = params.p_levels[0].size();
+
+        std::vector<std::pair<u128, int>> multi_factors;
+        for (auto& [q, e] : params.p_factorization)
+            if (e >= 2) multi_factors.push_back({q, e});
+
+        std::cout << "\np=" << (uint64_t)p << " k=" << k << " factors with e>=2: ";
+        for (auto& [q, e] : multi_factors) std::cout << "(" << (uint64_t)q << "," << e << ") ";
+        std::cout << "\n";
+
+        bool reached_zero_failure = false;
+        for (int mult : multipliers) {
+            const size_t m = (size_t)mult * k;
+            const size_t extra_rows = m - k;
+
+            int failures = 0, full_rank_trials = 0;
+            std::vector<double> avg_deficiency(multi_factors.size(), 0.0);
+
+            for (int t = 0; t < trials; ++t) {
+                CrtSystem s = build_crt_system(params, extra_rows, 3);
+                U128Vector C = crtSolve(params, s.M, s.X);
+                if (C.empty()) ++failures;
+
+                bool all_full = true;
+                for (size_t fi = 0; fi < multi_factors.size(); ++fi) {
+                    size_t rank = lin_alg::rankModPrime(s.M, k, multi_factors[fi].first);
+                    avg_deficiency[fi] += (double)(k - rank);
+                    if (rank != k) all_full = false;
+                }
+                if (all_full) ++full_rank_trials;
+            }
+
+            double failure_rate = 100.0 * failures / trials;
+            double full_rank_rate = 100.0 * full_rank_trials / trials;
+            std::cout << "  m=" << mult << "k: failure=" << failure_rate
+                      << "%  all-e>=2-factors-full-rank=" << full_rank_rate << "%  avg deficiency ";
+            for (size_t fi = 0; fi < multi_factors.size(); ++fi)
+                std::cout << "(q=" << (uint64_t)multi_factors[fi].first << ": "
+                          << (avg_deficiency[fi] / trials) << ") ";
+            std::cout << "\n";
+
+            // Once fully clear, a further increase in relations must not
+            // bring failure back.
+            if (failure_rate == 0.0) reached_zero_failure = true;
+            else CHECK(!reached_zero_failure);
+        }
+        // every prime must reach 0% failure somewhere in this sweep --
+        // otherwise "add relations" isn't actually a terminating strategy
+        // for it within a reasonable relation count.
+        CHECK(reached_zero_failure);
+    }
+}
+
 struct TestCase {
     const char* name;
     void (*fn)();
@@ -367,6 +654,11 @@ int main() {
         {"problem_params_invariants_across_prime_sizes", test_problem_params_invariants_across_prime_sizes},
         {"add_relations_reaches_factor_base_size_and_reconstructs", test_add_relations_reaches_factor_base_size_and_reconstructs},
         {"add_relations_larger_prime_still_reconstructs", test_add_relations_larger_prime_still_reconstructs},
+        {"crt_solve_recovers_planted_solution_small_prime", test_crt_solve_recovers_planted_solution_small_prime},
+        {"crt_solve_matches_planted_solution_across_prime_sizes", test_crt_solve_matches_planted_solution_across_prime_sizes},
+        {"crt_solve_handles_rectangular_overdetermined", test_crt_solve_handles_rectangular_overdetermined},
+        {"crt_solve_on_real_relations_from_add_relations", test_crt_solve_on_real_relations_from_add_relations},
+        {"crt_solve_failure_vs_rank_by_relation_multiple", test_crt_solve_failure_vs_rank_by_relation_multiple},
     };
 
     for (auto& t : tests) {

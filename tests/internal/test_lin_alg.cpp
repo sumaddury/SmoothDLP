@@ -613,7 +613,8 @@ void test_hensel_lift_full_rank_two_levels() {
     U128Vector L_true = {5, 24};   // 5 + 24 = 29 === 2 (mod 27)
     CHECK(unsatisfiedRows(M, X, L_true, q_to_e).empty());   // sanity-check the planted system itself
 
-    U128Vector L = henselLift(M, X, 2, q, e);
+    U128Vector L;
+    CHECK(henselLift(M, X, 2, q, e, L) == SolveStatus::OK);
     CHECK(unsatisfiedRows(M, X, L, q_to_e).empty());
     CHECK(L == L_true);
 }
@@ -629,7 +630,8 @@ void test_hensel_lift_matches_planted_solution_randomized() {
         size_t m = n + 5;
         System s = buildSystemModQe(m, n, 3, q, q_to_e);
 
-        U128Vector L = henselLift(s.M, s.X, n, q, e);
+        U128Vector L;
+        CHECK(henselLift(s.M, s.X, n, q, e, L) == SolveStatus::OK);
         CHECK(unsatisfiedRows(s.M, s.X, L, q_to_e).empty());
     }
 }
@@ -642,7 +644,8 @@ void test_hensel_lift_single_level_matches_base_solve() {
     U128Vector base;
     CHECK(solveViaRaw(s.M, s.X, 15, q, base) == SolveStatus::OK);
 
-    U128Vector lifted = henselLift(s.M, s.X, 15, q, 1);
+    U128Vector lifted;
+    CHECK(henselLift(s.M, s.X, 15, q, 1, lifted) == SolveStatus::OK);
     CHECK(lifted == base);
 }
 

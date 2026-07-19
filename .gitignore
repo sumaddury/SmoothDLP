@@ -10,14 +10,20 @@ build/
 smooth.egg-info/
 scripts/
 .claude/
-tests/internal/test_montgomery
-tests/internal/test_infra
-tests/internal/test_gauss_dream
-tests/internal/test_smooth_algos
+# Compiled test binaries -- named test_<module> with no extension, matching
+# test_<module>.cpp. An explicit per-binary list here previously missed
+# test_lin_alg (added after the list was written, never appended) and let it
+# get committed; this pattern-based exclusion covers any current or future
+# one automatically instead of relying on remembering to update a list.
+tests/internal/test_*
+!tests/internal/test_*.cpp
+!tests/internal/test_*.h
 tests/internal/*.dSYM
 tests/internal/*.o
 notebooks/
 
 # emacs autosave (#file#) and lock (.#file) files
-#*#
+# leading '#' must be escaped -- gitignore treats an unescaped one as a
+# comment marker, so the unescaped form silently ignored nothing.
+\#*#
 .#*
