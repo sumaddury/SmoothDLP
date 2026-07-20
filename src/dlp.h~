@@ -1,6 +1,0 @@
-#include "infra.h"
-#include "montgomery.h"
-
-namespace dlp {
-  
-}

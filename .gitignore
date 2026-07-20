@@ -22,8 +22,12 @@ tests/internal/*.dSYM
 tests/internal/*.o
 notebooks/
 
-# emacs autosave (#file#) and lock (.#file) files
+# emacs autosave (#file#), lock (.#file), and backup (file~) files
 # leading '#' must be escaped -- gitignore treats an unescaped one as a
 # comment marker, so the unescaped form silently ignored nothing.
 \#*#
 .#*
+*~
+
+# vim swap files (.swp, plus .swo/.swn if a swap file already existed)
+*.sw[a-z]

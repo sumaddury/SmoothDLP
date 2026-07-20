@@ -38,18 +38,18 @@ python -m pytest tests/ -q
 
 ## The discrete logarithm problem
 
-Fix a large prime `p`. The nonzero residues `{1, 2, ..., p-1}` under
-multiplication mod `p` form a group. Pick a base `g` in that group. Given a
-target `b`, the **discrete logarithm problem (DLP)** asks for the exponent
-`x` such that:
+Fix a large prime $p$. The nonzero residues $\{1, 2, \ldots, p-1\}$ under
+multiplication mod $p$ form a group. Pick a base $g$ in that group. Given a
+target $b$, the **discrete logarithm problem (DLP)** asks for the exponent
+$x$ such that:
 
-```
-g^x ≡ b (mod p)
-```
+$$
+g^x \equiv b \pmod{p}
+$$
 
-Computing `g^x mod p` from `x` is cheap (fast exponentiation by repeated
-squaring). Going backwards — recovering `x` from `g^x mod p` — is believed to
-be computationally hard for a well-chosen large `p`. That asymmetry is the
+Computing $g^x \bmod p$ from $x$ is cheap (fast exponentiation by repeated
+squaring). Going backwards — recovering $x$ from $g^x \bmod p$ — is believed
+to be computationally hard for a well-chosen large $p$. That asymmetry is the
 security foundation underneath Diffie–Hellman key exchange, ElGamal
 encryption, DSA signatures, and related schemes. This project is about
 attacking DLP faster than the naive/generic approach, as a piece of
@@ -60,20 +60,20 @@ cryptanalysis research.
 ### Index calculus, briefly
 
 The classical approach for this problem over prime fields is **index
-calculus**. The idea: instead of attacking `x` directly, first fix a small
-bound `B` and let the **factor base** be the set of primes `≤ B`. An integer
-is `B`-smooth if all of its prime factors are `≤ B`.
+calculus**. The idea: instead of attacking $x$ directly, first fix a small
+bound $B$ and let the **factor base** be the set of primes $\leq B$. An
+integer is $B$-smooth if all of its prime factors are $\leq B$.
 
-1. Repeatedly try random exponents `t` and check whether `g^t mod p` is
-   `B`-smooth. Each hit gives a linear relation between `t` and the (unknown)
-   discrete logarithms of the factor-base primes, modulo `p - 1`.
+1. Repeatedly try random exponents $t$ and check whether $g^t \bmod p$ is
+   $B$-smooth. Each hit gives a linear relation between $t$ and the (unknown)
+   discrete logarithms of the factor-base primes, modulo $p - 1$.
 2. Once enough relations are collected, solve the resulting linear system to
-   recover `log_g(p_i)` for every prime `p_i` in the factor base.
-3. Find one more smooth relation involving the actual target `b`, which turns
-   directly into `log_g(b) = x`.
+   recover $\log_g(p_i)$ for every prime $p_i$ in the factor base.
+3. Find one more smooth relation involving the actual target $b$, which turns
+   directly into $\log_g(b) = x$.
 
 Classical index calculus therefore needs discrete logarithms for the whole
-factor base — `k + 1` of them in total, where `k` is the factor-base size —
+factor base — $k + 1$ of them in total, where $k$ is the factor-base size —
 before it can answer the original question.
 
 ### The "double" idea
@@ -81,41 +81,46 @@ before it can answer the original question.
 The paper this project implements changes the shape of the computation. Run
 **two** relation-collection processes at once:
 
-- **g-side:** sample random `t_i`, keep the ones where `g^{t_i} mod p` is
+- **g-side:** sample random $t_i$, keep the ones where $g^{t_i} \bmod p$ is
   smooth, and use them to build a linear system whose solution gives
-  `log_g(p_i)` for some subset of factor-base primes.
-- **b-side:** simultaneously, sample random `t̄_i`, keep the ones where
-  `b^{t̄_i} mod p` is smooth, and solve for `log_b(p̄_i)` — logarithms of
-  (possibly different) factor-base primes, but taken **base `b`** instead of
-  base `g`.
+  $\log_g(p_i)$ for some subset of factor-base primes.
+- **b-side:** simultaneously, sample random $\bar{t}_i$, keep the ones where
+  $b^{\bar{t}_i} \bmod p$ is smooth, and solve for $\log_b(\bar{p}_i)$ —
+  logarithms of (possibly different) factor-base primes, but taken **base
+  $b$** instead of base $g$.
 
 Both sides can be partially solved as soon as their linear system reaches
 full rank, even before every prime in the factor base has a known log on
-that side. The moment **any single prime** `p̄` has a known logarithm on
-*both* sides — `α = log_g(p̄)` and `β = log_b(p̄)` — the answer falls out
-algebraically:
+that side. The moment **any single prime** $\bar{p}$ has a known logarithm
+on *both* sides — $\alpha = \log_g(\bar{p})$ and $\beta = \log_b(\bar{p})$ —
+the answer falls out algebraically. Both $g^\alpha$ and $b^\beta$ equal the
+same prime $\bar{p}$, and since $b = g^x$ by definition of $x$:
 
-```
-g^α ≡ p̄ ≡ b^β (mod p)          both sides equal the same prime
-     ≡ (g^x)^β (mod p)          since b = g^x, by definition of x
-⟹   α ≡ x·β (mod p - 1)
-⟹   x ≡ α · β⁻¹ (mod p - 1)     the answer, with no further work
-```
+$$
+\begin{aligned}
+g^\alpha &\equiv \bar{p} \equiv b^\beta \equiv (g^x)^\beta \pmod{p} \\
+\implies \alpha &\equiv x\beta \pmod{p-1} \\
+\implies x &\equiv \alpha \cdot \beta^{-1} \pmod{p-1}
+\end{aligned}
+$$
 
-By the pigeonhole principle, once `(g-side logs found) + (b-side logs found)
-≥ k + 1`, an overlap between the two sides is *guaranteed* — but in practice
-one shows up far sooner (with 5 logs found on each side, the paper shows the
-overlap probability already exceeds 94%). So the double algorithm typically
-needs noticeably fewer than `k + 1` total discrete logarithms, and the two
-independent channels can run in parallel. It also has a generality advantage:
-classical index calculus requires `g` to actually generate the group, or
-some factor-base logs simply won't exist; the double algorithm still works
-with a non-generator base, since it only ever needs a partial, overlapping
-set of logs.
+the answer, with no further work once such a $\bar{p}$ is found.
 
-One real subtlety the paper's own presentation glosses over: `β` has to be
-*invertible* mod `p - 1` for the last step above to mean anything, and
-`p - 1` is always even, so an arbitrary overlapping prime's `β` is not
+By the pigeonhole principle, once
+$(\text{g-side logs found}) + (\text{b-side logs found}) \geq k + 1$, an
+overlap between the two sides is *guaranteed* — but in practice one shows up
+far sooner (with 5 logs found on each side, the paper shows the overlap
+probability already exceeds 94%). So the double algorithm typically needs
+noticeably fewer than $k + 1$ total discrete logarithms, and the two
+independent channels can run in parallel. It also has a generality
+advantage: classical index calculus requires $g$ to actually generate the
+group, or some factor-base logs simply won't exist; the double algorithm
+still works with a non-generator base, since it only ever needs a partial,
+overlapping set of logs.
+
+One real subtlety the paper's own presentation glosses over: $\beta$ has to
+be *invertible* mod $p - 1$ for the last step above to mean anything, and
+$p - 1$ is always even, so an arbitrary overlapping prime's $\beta$ is not
 guaranteed invertible. This implementation searches the overlap for one that
 is (and only falls back to collecting more relations if none of the current
 overlap qualifies), rather than assuming the first shared prime works.
@@ -123,15 +128,15 @@ overlap qualifies), rather than assuming the first shared prime works.
 Two supporting ideas make the "collect relations" step fast enough to be
 practical at all:
 
-- **Dickman's ρ function** estimates how common `B`-smooth numbers are near
-  a given size, which tells you how many random samples to expect per
+- **Dickman's $\rho$ function** estimates how common $B$-smooth numbers are
+  near a given size, which tells you how many random samples to expect per
   smooth hit — turning "try random exponents until one works" into a
   plannable batch size instead of an open-ended guess.
 - **Batch smoothness testing** (Bernstein's product-tree method) tests an
   entire batch of candidates against the whole factor base at once, instead
   of trial-dividing each candidate one at a time — the difference between
-  testing thousands of candidates in roughly `O(batch · polylog)` time
-  versus `O(batch × |factor base|)`.
+  testing thousands of candidates in roughly $O(\text{batch} \cdot
+  \text{polylog})$ time versus $O(\text{batch} \times |\text{factor base}|)$.
 
 ### Implementation notes
 
@@ -181,9 +186,9 @@ of the pipeline they belong to:
 
 **Smoothness and the Dickman function**
 - `is_smooth(x, y)` — whether `x` is `y`-smooth (all prime factors ≤ `y`).
-- `log_dickman(u)` — `ln(ρ(u))`, the log of Dickman's ρ function, used to estimate how common smooth numbers are.
+- `log_dickman(u)` — $\ln(\rho(u))$, the log of Dickman's $\rho$ function, used to estimate how common smooth numbers are.
 - `log_mul(x, log_rho)` — computes `x * exp(log_rho)` for large `x`, without losing precision to floating point along the way.
-- `psi_approx(x, y)` — an estimate of `Ψ(x, y)`, the count of `y`-smooth integers up to `x`.
+- `psi_approx(x, y)` — an estimate of $\Psi(x, y)$, the count of `y`-smooth integers up to `x`.
 
 **Batch smoothness testing (Bernstein's product-tree method)**
 - `build_product_tree(values)` — builds the product-tree levels over a list of values (typically the factor base).
@@ -196,7 +201,7 @@ of the pipeline they belong to:
   reused across multiple `solve` calls against the same `p`).
 - `DLP.solve(g, b)` — runs the double index calculus algorithm described
   above and returns `x` such that `g**x % p == b`. **Both `g` and `b` must
-  be genuine primitive roots mod `p`** (order exactly `p - 1`) — this is not
+  be genuine primitive roots mod `p`** (order exactly $p - 1$) — this is not
   validated internally, and violating it produces silent, persistent
   failures rather than an error.
 
