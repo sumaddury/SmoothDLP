@@ -14,9 +14,16 @@ cryptographic key sizes.
 
 ## Installation
 
+```bash
+git clone https://github.com/sumaddury/SmoothDLP.git
+cd SmoothDLP
+```
+
 The C++ core depends on GMP, NTL, Givaro, FFLAS-FFPACK, and LinBox, so it's
 built inside a conda environment that provides them, rather than against
-whatever happens to already be on the system.
+whatever happens to already be on the system. If you don't already have
+conda, install [Miniconda](https://docs.conda.io/en/latest/miniconda.html)
+or [Anaconda](https://www.anaconda.com/download) first.
 
 ```bash
 conda env create -f environment.yml   # once -- creates the smoothnumbers-dev env
