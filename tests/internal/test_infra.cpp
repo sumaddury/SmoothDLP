@@ -284,17 +284,25 @@ void test_problem_params_invariants_across_prime_sizes() {
 
 // ---- infra::addRelations -------------------------------------------------
 //
-// Contract: addRelations(base, params, M, X) grows M/X by relation batches
-// (random t in [0, p-2], base^t mod p, kept iff B-smooth over
-// params.p_levels) until at least k = params.p_levels[0].size() new rows
-// have been added. Each new row of M is that relation's sparse
-// factorization; the matching entry appended to X is the exponent t that
-// produced it -- NOT the smooth value itself -- since X is the right-hand
-// side of the M*L === X (mod p-1) system the rest of the pipeline solves
-// for base's discrete logs. That's the specific thing these tests verify:
-// every (M[i], X[i]) pair must satisfy reconstruct(M[i]) == base^X[i] mod p,
-// against ProblemParams's own self-computed factor base (not a hand-picked
-// one), since ProblemParams no longer accepts one from the caller.
+// Contract: addRelations(base, target, params, M, X) grows M/X by relation
+// batches (random t in [0, p-2], base^t mod p, kept iff B-smooth over
+// params.p_levels) until M.size() >= target -- target is an absolute row
+// count the caller picks (not implicitly k = params.p_levels[0].size();
+// callers wanting the old "at least one factor-base's worth" behavior just
+// pass k themselves). target <= M.size() already is a no-op: the loop
+// condition never enters, nothing is drawn or appended. Calling again with a
+// larger target after an earlier call resumes growing the same M/X in place
+// -- existing rows are never touched, only appended to -- which is what lets
+// a caller re-check target upward across repeated calls (e.g. a doubling
+// schedule) without redoing earlier work. Each new row of M is that
+// relation's sparse factorization; the matching entry appended to X is the
+// exponent t that produced it -- NOT the smooth value itself -- since X is
+// the right-hand side of the M*L === X (mod p-1) system the rest of the
+// pipeline solves for base's discrete logs. That's the specific thing these
+// tests verify: every (M[i], X[i]) pair must satisfy
+// reconstruct(M[i]) == base^X[i] mod p, against ProblemParams's own
+// self-computed factor base (not a hand-picked one), since ProblemParams no
+// longer accepts one from the caller.
 
 u128 reconstruct_from_params(const ProblemParams& params, const SparseList& factors) {
     u128 acc = 1;
@@ -314,7 +322,7 @@ void test_add_relations_reaches_factor_base_size_and_reconstructs() {
 
     RelationMatrix M;
     U128Vector X;
-    addRelations(base, params, M, X);
+    addRelations(base, k, params, M, X);
 
     CHECK(M.size() >= k);
     CHECK(X.size() == M.size());
@@ -336,7 +344,7 @@ void test_add_relations_larger_prime_still_reconstructs() {
 
     RelationMatrix M;
     U128Vector X;
-    addRelations(base, params, M, X);
+    addRelations(base, k, params, M, X);
 
     CHECK(M.size() == X.size());
     CHECK(M.size() >= k);
@@ -345,6 +353,82 @@ void test_add_relations_larger_prime_still_reconstructs() {
         u128 want = mont::powmod_odd(base, X[i], params.p, params.p_prime, params.r2);
         CHECK(reconstruct_from_params(params, M[i]) == want);
     }
+}
+
+// The interface's whole point is that target is caller-chosen, not pinned to
+// k -- these three exercise that directly rather than only ever re-testing
+// the k-shaped case above.
+
+void test_add_relations_supports_arbitrary_non_multiple_of_k_target() {
+    // p=1009's factor base (k=6, see the crtSolve tests below) doesn't
+    // evenly divide a target like 11 -- nothing about the implementation
+    // should care, since target is just "stop once M.size() >= this".
+    u128 p = 1009, base = 11;
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
+    const size_t target = k + k / 2 + 1;  // deliberately not a multiple of k
+
+    RelationMatrix M;
+    U128Vector X;
+    addRelations(base, target, params, M, X);
+
+    CHECK(M.size() >= target);
+    CHECK(X.size() == M.size());
+    for (size_t i = 0; i < M.size(); ++i) {
+        u128 want = mont::powmod_odd(base, X[i], params.p, params.p_prime, params.r2);
+        CHECK(reconstruct_from_params(params, M[i]) == want);
+    }
+}
+
+void test_add_relations_second_call_with_larger_target_extends_in_place() {
+    // The doubling-style schedule this is actually for calls addRelations
+    // repeatedly with a growing target on the SAME M/X -- this checks that
+    // pattern directly: the first call's rows must survive untouched (same
+    // values, same order), and the second call only ever appends.
+    u128 p = 1009, base = 11;
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
+
+    RelationMatrix M;
+    U128Vector X;
+    addRelations(base, k, params, M, X);
+    const RelationMatrix M_after_first = M;
+    const U128Vector X_after_first = X;
+    CHECK(M_after_first.size() >= k);
+
+    const size_t second_target = M.size() + k + 1;
+    addRelations(base, second_target, params, M, X);
+
+    CHECK(M.size() >= second_target);
+    CHECK(M.size() >= M_after_first.size());
+    for (size_t i = 0; i < M_after_first.size(); ++i) {
+        CHECK(X[i] == X_after_first[i]);
+        CHECK(M[i] == M_after_first[i]);
+    }
+    for (size_t i = 0; i < M.size(); ++i) {
+        u128 want = mont::powmod_odd(base, X[i], params.p, params.p_prime, params.r2);
+        CHECK(reconstruct_from_params(params, M[i]) == want);
+    }
+}
+
+void test_add_relations_target_at_or_below_current_size_is_a_no_op() {
+    u128 p = 1009, base = 11;
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
+
+    RelationMatrix M;
+    U128Vector X;
+    addRelations(base, k, params, M, X);
+    const RelationMatrix M_before = M;
+    const U128Vector X_before = X;
+
+    addRelations(base, M.size(), params, M, X);   // target == current size
+    CHECK(M == M_before);
+    CHECK(X == X_before);
+
+    addRelations(base, 1, params, M, X);          // target well below current size
+    CHECK(M == M_before);
+    CHECK(X == X_before);
 }
 
 // ---- infra::crtSolve -------------------------------------------------------
@@ -497,11 +581,12 @@ void test_crt_solve_handles_rectangular_overdetermined() {
 // that matters once relations come from genuine smooth values rather than a
 // hand-planted system.
 //
-// addRelations itself only ever collects the bare minimum (>= k rows) --
-// exactly the m=1k regime the statistics test below shows failing 73-93% of
-// the time. Getting a reliable relation set is this test's caller's job,
-// same as it would be for any real driver built on top of crtSolve: call
-// addRelations repeatedly until comfortably past 3k, not once.
+// addRelations takes an explicit target row count now, but going straight to
+// target=k (the m=1k regime the statistics test below shows failing 73-93%
+// of the time) still isn't a reliable relation set on its own -- getting one
+// is this test's caller's job, same as it would be for any real driver built
+// on top of crtSolve: target 3k up front, then advance target further on
+// retry rather than stopping at k.
 //
 // base MUST be a genuine primitive root mod p for this to ever converge --
 // addRelations/crtSolve do not check this (nor should they: it's the
@@ -521,12 +606,12 @@ void test_crt_solve_on_real_relations_from_add_relations() {
     const size_t k = params.p_levels[0].size();
     RelationMatrix M;
     U128Vector X;
-    while (M.size() < 3 * k) addRelations(base, params, M, X);
+    addRelations(base, 3 * k, params, M, X);
 
     U128Vector C = crtSolve(params, M, X);
     int retries = 0;
     while (C.empty() && retries < 10) {
-        addRelations(base, params, M, X);
+        addRelations(base, M.size() + k, params, M, X);
         C = crtSolve(params, M, X);
         ++retries;
     }
@@ -666,7 +751,7 @@ void test_filter_determined_keeps_only_directly_verified_entries() {
 
     RelationMatrix M;
     U128Vector X;
-    while (M.size() < 3 * k) addRelations(base, params, M, X);
+    addRelations(base, 3 * k, params, M, X);
 
     U128Vector C = crtSolve(params, M, X);
     CHECK(!C.empty());
@@ -700,7 +785,7 @@ void test_filter_determined_excludes_a_corrupted_coordinate_and_keeps_the_rest()
 
     RelationMatrix M;
     U128Vector X;
-    while (M.size() < 3 * k) addRelations(base, params, M, X);
+    addRelations(base, 3 * k, params, M, X);
 
     U128Vector C = crtSolve(params, M, X);
     CHECK(!C.empty());
@@ -731,6 +816,87 @@ void test_filter_determined_on_empty_input_returns_empty() {
     CHECK(filterDetermined((u128)11, params, empty).empty());
 }
 
+// ---- infra::modInv ----------------------------------------------------------
+//
+// Contract: modInv(x, factorization) returns x^-1 mod n, where n is the
+// product implied by factorization (a list of (prime, exponent) pairs, e.g.
+// params.p_factorization for n = p-1) -- computed by inverting x within
+// each prime-power factor independently and Garner-recombining, not by a
+// single all-at-once Euclidean step. Returns 0 (never a genuine inverse for
+// n > 1) when x isn't actually invertible mod n.
+
+// Independent oracle via GMP's own extended-Euclid-based mpz_invert, not a
+// restatement of modInv's CRT-based implementation. Mirrors modInv's 0
+// sentinel so results compare directly.
+u128 gmp_mod_inverse_oracle(u128 x, u128 n) {
+    mpz_class result;
+    const mpz_class xm = u128_to_mpz(x % n);
+    const mpz_class nm = u128_to_mpz(n);
+    if (mpz_invert(result.get_mpz_t(), xm.get_mpz_t(), nm.get_mpz_t()) == 0) return 0;
+    return mpz_to_u128(result);
+}
+
+void test_mod_inv_matches_gmp_oracle_across_random_coprime_values() {
+    // Deliberately spans small (single prime-power factor, so the
+    // recombination loop never runs at all) up to a ~75-bit prime whose
+    // p-1 has a large individual factor -- large enough that an unfixed
+    // overflow in the diff*P_inv step would actually manifest, not just a
+    // theoretical concern.
+    const u128 primes[] = {
+        (u128)257,                           // p-1 = 256 = 2^8 -- single factor
+        (u128)1009,                          // p-1 = 1008 = 2^4*3^2*7
+        (u128)2147483647ULL,                 // p-1 = 2*3*7*11*31*151*331
+        find_prime_at_least((u128)1 << 74),  // ~75-bit, largest factor also large
+    };
+    const int trials = 200;
+
+    for (u128 p : primes) {
+        ProblemParams params(p);
+        const u128 n = p - 1;
+        int checked = 0;
+        for (int t = 0; t < trials; ++t) {
+            const u128 x = 1 + random_u128_bits(params.mask_bitlength);
+            const u128 got = modInv(x, params.p_factorization);
+            const u128 want = gmp_mod_inverse_oracle(x, n);
+            CHECK(got == want);
+            if (want != 0) {
+                ++checked;
+                // got is meaningless unless it actually satisfies the
+                // defining property -- redundant with the oracle match
+                // above, but checks the property directly rather than
+                // only trusting agreement between two implementations.
+                CHECK(mont::mulmod_any(x % n, got, n) == 1);
+            }
+        }
+        // At least some draws must land coprime to n, or this test isn't
+        // actually exercising the success path for this prime.
+        CHECK(checked > 0);
+    }
+}
+
+void test_mod_inv_returns_zero_when_not_invertible() {
+    u128 p = 1009; // p-1 = 1008 = 2^4 * 3^2 * 7
+    ProblemParams params(p);
+    for (u128 x : {(u128)2, (u128)4, (u128)6, (u128)3, (u128)9, (u128)7, (u128)14}) {
+        CHECK(modInv(x, params.p_factorization) == 0);
+    }
+}
+
+void test_mod_inv_single_factor_case() {
+    // p-1 = 256 = 2^8 is a single prime-power factor, so the Garner
+    // recombination loop never executes -- the result comes straight from
+    // factors[0], which still needs to be correct on its own.
+    u128 p = 257;
+    ProblemParams params(p);
+    CHECK(params.p_factorization.size() == 1);
+
+    for (u128 x : {(u128)3, (u128)5, (u128)7, (u128)9, (u128)255}) {
+        const u128 got = modInv(x, params.p_factorization);
+        CHECK(got != 0);
+        CHECK(mont::mulmod_any(x % (p - 1), got, p - 1) == 1);
+    }
+}
+
 struct TestCase {
     const char* name;
     void (*fn)();
@@ -752,6 +918,9 @@ int main() {
         {"problem_params_invariants_across_prime_sizes", test_problem_params_invariants_across_prime_sizes},
         {"add_relations_reaches_factor_base_size_and_reconstructs", test_add_relations_reaches_factor_base_size_and_reconstructs},
         {"add_relations_larger_prime_still_reconstructs", test_add_relations_larger_prime_still_reconstructs},
+        {"add_relations_supports_arbitrary_non_multiple_of_k_target", test_add_relations_supports_arbitrary_non_multiple_of_k_target},
+        {"add_relations_second_call_with_larger_target_extends_in_place", test_add_relations_second_call_with_larger_target_extends_in_place},
+        {"add_relations_target_at_or_below_current_size_is_a_no_op", test_add_relations_target_at_or_below_current_size_is_a_no_op},
         {"crt_solve_recovers_planted_solution_small_prime", test_crt_solve_recovers_planted_solution_small_prime},
         {"crt_solve_matches_planted_solution_across_prime_sizes", test_crt_solve_matches_planted_solution_across_prime_sizes},
         {"crt_solve_handles_rectangular_overdetermined", test_crt_solve_handles_rectangular_overdetermined},
@@ -760,6 +929,9 @@ int main() {
         {"filter_determined_keeps_only_directly_verified_entries", test_filter_determined_keeps_only_directly_verified_entries},
         {"filter_determined_excludes_a_corrupted_coordinate_and_keeps_the_rest", test_filter_determined_excludes_a_corrupted_coordinate_and_keeps_the_rest},
         {"filter_determined_on_empty_input_returns_empty", test_filter_determined_on_empty_input_returns_empty},
+        {"mod_inv_matches_gmp_oracle_across_random_coprime_values", test_mod_inv_matches_gmp_oracle_across_random_coprime_values},
+        {"mod_inv_returns_zero_when_not_invertible", test_mod_inv_returns_zero_when_not_invertible},
+        {"mod_inv_single_factor_case", test_mod_inv_single_factor_case},
     };
 
     for (auto& t : tests) {

@@ -8,10 +8,8 @@ _REQUIRED_NEW_API = [
     "build_product_tree",
     "smooth_candidates",
     "tree_factorize",
-    "squfof",
-    "mp_ln",
-    "factorize_naive",
     "log_mul",
+    "DLP",
 ]
 
 

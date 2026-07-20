@@ -96,6 +96,7 @@ struct ProblemParams {
 */
 void addRelations(
     u128 base,
+    size_t target,
     const ProblemParams& params,
     RelationMatrix& M,
     U128Vector& X);
@@ -181,5 +182,34 @@ std::vector<std::pair<uint32_t, u128>> filterDetermined(
     u128 base,
     const ProblemParams& params,
     const U128Vector& L);
+
+/**
+  Computes x^-1 mod n, where n = prod(q_i^e_i) is given not as a single
+  integer but as its own prime-power factorization -- params.p_factorization
+  is exactly this shape for n = p-1, which is what this exists for (the
+  final x === alpha*beta^-1 (mod p-1) combination step needs an inverse mod
+  the composite p-1, not mod a single prime).
+
+  x is a unit mod n if and only if it's a unit mod every q_i^e_i
+  individually (a standard consequence of (Z/nZ)* being isomorphic to the
+  product of the (Z/q_i^e_i Z)*'s via CRT: a tuple is a unit in a product
+  ring iff every component is a unit). So x is inverted independently
+  within each q_i^e_i (file-local modInvPrimePower, in infra.cpp), and the
+  per-factor inverses are Garner-recombined into one value mod n -- the
+  same recombination shape crtSolve already uses to combine per-factor
+  L-vector solutions, just applied here to a single scalar instead.
+
+  Returns 0 if x has no inverse mod n (equivalently, if q_i divides x for
+  some factor). This is a safe, unambiguous sentinel: a genuine inverse mod
+  n > 1 is never 0 (x*0 === 1 (mod n) has no solution), so a 0 return can
+  only mean "not invertible," never "the answer happens to be 0."
+
+  PRECONDITION, not checked here: factorization must be a genuine, non-
+  empty prime-power factorization (distinct primes, each with its true
+  exponent) of the n being inverted against -- e.g. params.p_factorization
+  for n = p-1. An empty factorization is undefined behavior (factors[0] is
+  indexed unconditionally).
+*/
+u128 modInv(u128 x, const FactorList& factorization);
 
 } // namespace infra

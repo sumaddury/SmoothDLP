@@ -22,7 +22,7 @@ arch_flags = ["-arch", host_arch]
 
 core_module = Extension(
     name="smooth._core",
-    sources=["src/core.cpp", "src/gauss_dream.cpp", "src/smooth_algos.cpp", "src/infra.cpp", "src/montgomery.cpp"],
+    sources=["src/core.cpp", "src/gauss_dream.cpp", "src/smooth_algos.cpp", "src/infra.cpp", "src/dlp.cpp", "src/montgomery.cpp"],
     include_dirs=[pybind_include, os.path.join(CONDA, "include")],
     library_dirs=[os.path.join(CONDA, "lib")],
     libraries=["gmpxx", "gmp", "ntl", "linbox", "givaro", "fflas", "ffpack"],

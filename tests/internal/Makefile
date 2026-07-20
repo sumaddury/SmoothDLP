@@ -80,9 +80,22 @@ LIN_ALG_FLAGS := -std=c++17 -O2 -g -Wall -Wextra \
                  -D_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION
 LIN_ALG_LIBS  := -llinbox -lgivaro -lntl -lfflas -lffpack -lgmpxx -lgmp
 
+# Unlike test_infra.cpp, dlp.cpp does NOT unity-include infra.cpp (it only
+# includes infra.h -- dlp.cpp calls infra::* functions but never touches
+# lin_alg:: directly, so it has no need for lin_alg.h's LinBox headers
+# itself). That means infra.cpp needs to be compiled here as its own real
+# source file (not just a Makefile prerequisite the way it is for
+# INFRA_BIN above), so DLP::solve's calls into infra::addRelations/
+# crtSolve/filterDetermined/modInv actually have something to link against.
+# Still needs LIN_ALG_FLAGS/LIN_ALG_LIBS throughout, since infra.cpp itself
+# unity-includes lin_alg.cpp internally and pulls in LinBox regardless of
+# how it's reached.
+DLP_SRC := test_dlp.cpp $(SRCDIR)/dlp.cpp $(SRCDIR)/infra.cpp $(SRCDIR)/smooth_algos.cpp $(SRCDIR)/gauss_dream.cpp $(SRCDIR)/montgomery.cpp
+DLP_BIN := test_dlp
+
 .PHONY: all test clean
 
-all: $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN)
+all: $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN) $(DLP_BIN)
 
 $(MONT_BIN): $(MONT_SRC) $(SRCDIR)/montgomery.h $(SRCDIR)/types.h
 	$(CXX) $(CXXFLAGS) $(MONT_SRC) -o $(MONT_BIN) $(LDFLAGS) $(LIBS)
@@ -99,13 +112,17 @@ $(SMOOTH_BIN): $(SMOOTH_SRC) $(SRCDIR)/smooth_algos.h $(SRCDIR)/gauss_dream.h $(
 $(LIN_ALG_BIN): $(LIN_ALG_SRC) $(SRCDIR)/lin_alg.cpp $(SRCDIR)/lin_alg.h $(SRCDIR)/types.h
 	$(CXX) $(LIN_ALG_FLAGS) $(LIN_ALG_SRC) -o $(LIN_ALG_BIN) $(LDFLAGS) $(LIN_ALG_LIBS)
 
-test: $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN)
+$(DLP_BIN): $(DLP_SRC) $(SRCDIR)/dlp.h $(SRCDIR)/infra.h $(SRCDIR)/lin_alg.cpp $(SRCDIR)/lin_alg.h $(SRCDIR)/types.h $(SRCDIR)/montgomery.h $(SRCDIR)/smooth_algos.h $(SRCDIR)/gauss_dream.h
+	$(CXX) $(LIN_ALG_FLAGS) $(DLP_SRC) -o $(DLP_BIN) $(LDFLAGS) $(LIN_ALG_LIBS)
+
+test: $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN) $(DLP_BIN)
 	./$(MONT_BIN)
 	./$(INFRA_BIN)
 	./$(GAUSS_BIN)
 	./$(SMOOTH_BIN)
 	./$(LIN_ALG_BIN)
+	./$(DLP_BIN)
 
 clean:
-	rm -f $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN)
-	rm -rf $(MONT_BIN).dSYM $(INFRA_BIN).dSYM $(GAUSS_BIN).dSYM $(SMOOTH_BIN).dSYM $(LIN_ALG_BIN).dSYM
+	rm -f $(MONT_BIN) $(INFRA_BIN) $(GAUSS_BIN) $(SMOOTH_BIN) $(LIN_ALG_BIN) $(DLP_BIN)
+	rm -rf $(MONT_BIN).dSYM $(INFRA_BIN).dSYM $(GAUSS_BIN).dSYM $(SMOOTH_BIN).dSYM $(LIN_ALG_BIN).dSYM $(DLP_BIN).dSYM

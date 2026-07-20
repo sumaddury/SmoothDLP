@@ -35,26 +35,36 @@ src/            C++ core, compiled into the smooth._core pybind11 extension
                       into infra.cpp via #include "lin_alg.cpp" (unity build, see below); not
                       bound in core.cpp, so unreachable from Python.
   infra.cpp/h         buildProductTree/smoothCandidates/treeFactorize (Bernstein batch-smoothness,
-                      bound in core.cpp) + ProblemParams/addRelations/crtSolve (the double-index-
-                      calculus relation-collection + CRT/Hensel solve layer, built on lin_alg.cpp,
-                      not yet bound in core.cpp -- see "Module status" below)
+                      bound directly in core.cpp) + ProblemParams/addRelations/crtSolve/
+                      filterDetermined/modInv (the double-index-calculus relation-collection +
+                      CRT/Hensel solve + Omega_g/Omega_b + final-combination layer, built on
+                      lin_alg.cpp). Not bound as standalone Python entry points -- only reachable
+                      from Python transitively through dlp::DLP (below).
+  dlp.cpp/h           dlp::DLP -- the top-level driver that assembles infra.cpp's building blocks
+                      into the paper's Algorithm 1 end to end (DLP(p).solve(g, b) -> x). Bound
+                      directly in core.cpp as a Python class. Does NOT unity-include infra.cpp
+                      (only includes infra.h), so it links against infra.cpp as an ordinary
+                      separate translation unit -- see "Design notes: dlp::DLP and crtSolve's
+                      concurrency constraint" below for why that distinction actually mattered
+                      during development.
   core.cpp            pybind11 bindings -> smooth._core
   __init__.py          Python-facing `smooth` package surface
 tests/
-  test_gauss_dream.py, test_infra.py, test_smooth_algos.py   pytest, run against the built extension
+  test_gauss_dream.py, test_infra.py, test_smooth_algos.py, test_dlp.py   pytest, run against the
+                        built extension
   conftest.py           reference/oracle implementations used by the above
   internal/             standalone C++ test suites, one per header with complete functions:
                         test_montgomery, test_gauss_dream, test_smooth_algos (GMP-only), plus
-                        test_infra and test_lin_alg (link LinBox/Givaro/NTL/FFLAS-FFPACK too).
-                        `make -C tests/internal test` builds + runs all five. Independent of
+                        test_infra, test_lin_alg, and test_dlp (link LinBox/Givaro/NTL/FFLAS-FFPACK
+                        too). `make -C tests/internal test` builds + runs all six. Independent of
                         setup.py/pybind11 -- these link straight against GMP/LinBox, no Python.
 scripts/        gitignored scratch area: legacy debug/investigation artifacts from earlier LinBox
                 rank-deficiency work. Not part of the build; historical only.
 texts/          reference PDFs. Only 2409.08784v1.pdf (the paper) is authoritative; rest is
                 background reading or the stale original plan (see warning above).
 setup.py        builds smooth._core. Sources: core.cpp, gauss_dream.cpp, smooth_algos.cpp,
-                infra.cpp, montgomery.cpp. (lin_alg.cpp is not listed -- it's unity-included by
-                infra.cpp, see below, so it has no separate translation unit.)
+                infra.cpp, dlp.cpp, montgomery.cpp. (lin_alg.cpp is not listed -- it's
+                unity-included by infra.cpp, see below, so it has no separate translation unit.)
 environment.yml conda env `smoothnumbers-dev`: gmp, ntl, givaro, fflas-ffpack, linbox, boost, pybind11
 ```
 
@@ -84,26 +94,50 @@ conda activate smoothnumbers-dev            # provides GMP/NTL/LinBox/Givaro/FFL
 python setup.py build_ext --inplace          # builds src/_core.cpython-*.so
 python -m pytest tests/ -q                   # Python-level tests (skipped if smooth fails to import)
 
-make -C tests/internal test                  # all 5 standalone C++ suites (needs the conda env
+make -C tests/internal test                  # all 6 standalone C++ suites (needs the conda env
                                               # active for LinBox/Givaro/NTL -- see Makefile)
 ```
 
 ## Module status: what's ready / blocked / missing
 
+The full pipeline described in the paper (§III of `2409.08784v1.pdf`) is now
+implemented, tested, and reachable from Python end to end via `dlp::DLP` —
+there is no longer a "not started" category. What remains is only the
+narrower distinction between what's bound as its own Python entry point
+versus what's only reachable transitively through `DLP.solve(...)`.
+
 - **Done, tested, reachable from Python (bound in `core.cpp`)**:
   - `montgomery.h/.cpp` — all 9 functions, wired into `setup.py`'s
     `sources=[...]`. Not bound directly (no `mont::` Python entry points),
     but reachable transitively through everything below that calls it.
-  - `gauss_dream.cpp` (`isPrime`, `factorize_naive`, `squfof`, `factorize`,
-    `sieveTo`) and `smooth_algos.cpp` (`isSmooth`, `logDickman`, `psiApprox`,
-    `mp_ln`, `log_mul`) — fully working end-to-end, `tests/test_gauss_dream.py`
-    / `tests/test_smooth_algos.py` pass against the built extension.
+  - `gauss_dream.cpp` (`isPrime`, `factorize`, `sieveTo`) and
+    `smooth_algos.cpp` (`isSmooth`, `logDickman`, `psiApprox`, `log_mul`) —
+    bound and tested (`tests/test_gauss_dream.py` / `tests/test_smooth_algos.py`).
+    `factorize_naive`, `squfof` (`gauss_dream.cpp`) and `mp_ln`
+    (`smooth_algos.cpp`) remain fully implemented and tested **at the C++
+    level only** (`tests/internal/test_gauss_dream.cpp` /
+    `test_smooth_algos.cpp`) — deliberately removed from `core.cpp`/
+    `__init__.py`, so `hasattr(smooth, "factorize_naive")` etc. is now
+    `False`. Use `gauss::factorize_naive`/`gauss::squfof`/`salgo::mp_ln`
+    directly from C++ if you need them; don't re-add pybind bindings for
+    them without checking why they were pulled first.
   - `infra.cpp::buildProductTree` / `smoothCandidates` / `treeFactorize` —
     Bernstein batch-smoothness testing, tested (`tests/test_infra.py`).
+  - `dlp::DLP` — `DLP(p).solve(g, b)` implements the paper's Algorithm 1 end
+    to end: doubling-schedule relation collection (`infra::addRelations`),
+    CRT/Hensel solve (`infra::crtSolve`), the Ω_g/Ω_b direct-verification
+    construction (`infra::filterDetermined`), and the final
+    `x ≡ α·β⁻¹ (mod p-1)` combination (`infra::modInv`). Bound in `core.cpp`
+    via `py::class_<dlp::DLP>`; tested both at the C++ level
+    (`tests/internal/test_dlp.cpp`) and via pytest (`tests/test_dlp.py`).
+    Read "Design notes: dlp::DLP and crtSolve's concurrency constraint"
+    below before touching its threading structure — it looks like ordinary
+    `std::async` fork-join but has one load-bearing constraint that isn't
+    obvious from the code alone.
 
 - **Done and tested (`make -C tests/internal test`, see `test_lin_alg.cpp` /
-  `test_infra.cpp`), but not yet bound in `core.cpp` — unreachable from
-  Python**:
+  `test_infra.cpp`), but not bound as standalone Python entry points —
+  reachable from Python only transitively through `dlp::DLP`**:
   - `lin_alg.cpp` (`solveModPrime`, `rankModPrime`, `henselLift`) — the raw
     GF(q) solve/rank layer plus Hensel lifting from a base solve up to q^e.
     See doc comments in `lin_alg.h` for the `SolveStatus`/`MAX_MODULUS`
@@ -111,28 +145,61 @@ make -C tests/internal test                  # all 5 standalone C++ suites (need
     specifically (a different-looking but "equivalent" LinBox field silently
     returns wrong solves above q ~ 2^32 — do not swap it, see the comment in
     `lin_alg.h` and the memory note on this).
-  - `infra.cpp` (`ProblemParams`, `addRelations`, `crtSolve`) — the
-    relation-collection + CRT/Hensel-over-factors-of-(p-1) solve layer, built
-    on `lin_alg.cpp`. See doc comments in `infra.h` for the full contract,
-    in particular: `crtSolve` returns an **empty vector** if `henselLift`
-    fails on any single factor of p-1 (not an exception, not a partial
-    result — check for empty), and `addRelations`' `base` argument has an
-    **unchecked precondition** that it be a genuine primitive root mod p (see
-    "Primitive-root precondition" below) — this is a real, common failure
-    mode if violated, not a rare edge case.
-  - Binding this layer into `core.cpp` (mirroring the `buildProductTree`/
-    `smoothCandidates`/`treeFactorize` pattern already there) is a
-    reasonably mechanical next step whenever Python-side access is needed.
+  - `infra.cpp` (`ProblemParams`, `addRelations`, `crtSolve`,
+    `filterDetermined`, `modInv`) — the relation-collection +
+    CRT/Hensel-over-factors-of-(p-1) solve + overlap + combination layer,
+    built on `lin_alg.cpp`. See doc comments in `infra.h` for the full
+    contract, in particular: `crtSolve` returns an **empty vector** if
+    `henselLift` fails on any single factor of p-1 (not an exception, not a
+    partial result — check for empty), and `addRelations`' `base` argument
+    has an **unchecked precondition** that it be a genuine primitive root
+    mod p (see "Primitive-root precondition" below) — this is a real,
+    common failure mode if violated, not a rare edge case. `dlp::DLP` is
+    what actually calls all of these today; binding them individually as
+    their own Python entry points (mirroring `buildProductTree`/
+    `smoothCandidates`/`treeFactorize`) would only be needed for partial
+    access (e.g. just relation collection, without a full solve) —
+    `modInv` also needs its definition in `infra.cpp` to stay a normal
+    (non-`inline`) function if it's ever touched again: it was briefly
+    marked `inline` there, which is only safe for a function whose
+    definition's translation unit also calls it (true of the file-local
+    `modInvPrimePower`/`binExp` helpers, not true of `modInv` itself, a
+    public API function nothing in `infra.cpp` calls) — with `inline` on
+    it, the compiler is free to discard the symbol entirely whenever it's
+    unreferenced in that one TU, which silently breaks linking for any
+    consumer (like `dlp.cpp`) that links against `infra.cpp` as an ordinary
+    separate object rather than unity-including it the way
+    `test_infra.cpp` does.
 
-- **Not started — no code exists yet**:
-  - The dual-channel double-index-calculus driver itself: generator search,
-    smoothness-bound selection, g-side/b-side relation collection loops
-    running concurrently, the overlap-finder comparing partial log tables
-    across both sides, and the final `x ≡ α·β⁻¹ (mod p-1)` combination. This
-    is the paper's actual novel contribution (§III of `2409.08784v1.pdf`)
-    and is the biggest remaining chunk of work — `addRelations`/`crtSolve`
-    are the building blocks it will be assembled from, one side at a time,
-    but nothing wires the two sides together yet.
+## Design notes: dlp::DLP and crtSolve's concurrency constraint
+
+`dlp::DLP::solve` runs its g-side and b-side pipelines
+(`addRelations` + `crtSolve` + `filterDetermined`) concurrently via
+`std::async`, but the two `crtSolve` calls are serialized against each other
+through a file-local `static std::mutex` in `dlp.cpp` even though everything
+else about the two sides runs in parallel. This was **not** a defensive
+default — it was added after direct testing during development found that
+two threads calling `crtSolve` concurrently crash the underlying
+LinBox/Givaro/NTL/FFLAS-FFPACK stack nondeterministically (SIGABRT or
+SIGTRAP, at unpredictable points — not reliably on the first call, sometimes
+after dozens of successful calls), regardless of input. `addRelations` was
+separately confirmed safe under the same kind of concurrent-call stress test
+(pure GMP/Montgomery arithmetic on disjoint per-side state) — the
+unsafety is specific to the LinBox-touching code path, not to concurrency in
+this codebase generally.
+
+The root cause was not fully diagnosed (most likely candidate: LinBox's
+`commentator` singleton, or some other global/non-thread-local state
+somewhere in that dependency chain — the same code that already causes the
+unrelated duplicate-symbol issue documented under "Unity-build requirement"
+above), but the empirical finding is solid and reproducible. The mutex is
+intentionally a single **process-wide** static, not a per-`DLP`-instance
+member — since the evidence points to genuinely global state in the
+underlying library, not per-`ProblemParams` state, scoping the mutex down to
+per-instance would silently reintroduce the crash for two `DLP` instances
+(even over different primes) solving concurrently. Don't remove or
+re-scope this mutex without re-running a concurrent-`crtSolve`-call stress
+test first.
 
 ## Primitive-root precondition on `addRelations`' `base`
 

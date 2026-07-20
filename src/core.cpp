@@ -3,6 +3,7 @@
 #include "smooth_algos.h"
 #include <pybind11/stl.h>
 #include "infra.h"
+#include "dlp.h"
 #include "types.h"
 #include <vector>
 #include <utility>
@@ -111,19 +112,6 @@ PYBIND11_MODULE(_core, m) {
         return out;
     }, py::arg("n"));
 
-    m.def("factorize_naive", [](const py::object& o) {
-        const auto result = gauss::factorize_naive(pyint_to_u128(o));
-        py::list out(result.first.size());
-        for (size_t i = 0; i < result.first.size(); ++i) {
-            out[i] = py::make_tuple(u128_to_pyint(result.first[i].first), py::int_(result.first[i].second));
-        }
-        return py::make_tuple(out, u128_to_pyint(result.second));
-    }, py::arg("n"));
-
-    m.def("squfof", [](const py::object& o) {
-        return u128_to_pyint(gauss::squfof(pyint_to_u128(o)));
-    }, py::arg("n"));
-
     m.def("is_smooth", [](const py::object& o, uint32_t y) {
         return salgo::isSmooth(pyint_to_u128(o), y);
     }, py::arg("x"), py::arg("y"));
@@ -131,10 +119,6 @@ PYBIND11_MODULE(_core, m) {
     m.def("log_dickman", [](double u) {
         return salgo::logDickman(u);
     }, py::arg("u"));
-
-    m.def("mp_ln", [](const py::object& o) {
-        return salgo::mp_ln(pyint_to_u128(o));
-    }, py::arg("x"));
 
     m.def("log_mul", [](const py::object& o, double log_rho) {
         return u128_to_pyint(salgo::log_mul(pyint_to_u128(o), log_rho));
@@ -162,5 +146,13 @@ PYBIND11_MODULE(_core, m) {
             out[i] = py::make_tuple(py::int_(result[i].first), py::int_(result[i].second));
         return out;
     }, py::arg("p_levels"), py::arg("d"));
+
+    py::class_<dlp::DLP>(m, "DLP")
+        .def(py::init([](const py::object& p) {
+            return dlp::DLP(pyint_to_u128(p));
+        }), py::arg("p"))
+        .def("solve", [](dlp::DLP& self, const py::object& g, const py::object& b) {
+            return u128_to_pyint(self.solve(pyint_to_u128(g), pyint_to_u128(b)));
+        }, py::arg("g"), py::arg("b"));
 
 }

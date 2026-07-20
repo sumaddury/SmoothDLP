@@ -12,6 +12,30 @@ This is a research/educational implementation. It targets the same scale the
 paper itself benchmarks against (roughly 30–75 bit primes) — not real-world
 cryptographic key sizes.
 
+## Installation
+
+The C++ core depends on GMP, NTL, Givaro, FFLAS-FFPACK, and LinBox, so it's
+built inside a conda environment that provides them, rather than against
+whatever happens to already be on the system.
+
+```bash
+conda env create -f environment.yml   # once -- creates the smoothnumbers-dev env
+conda activate smoothnumbers-dev
+python setup.py build_ext --inplace   # builds smooth._core in place
+```
+
+Then verify it imports and works:
+
+```bash
+python -c "import smooth; print(smooth.is_prime(2**61 - 1))"   # True
+```
+
+The test suite (optional, but a good way to confirm the build is healthy):
+
+```bash
+python -m pytest tests/ -q
+```
+
 ## The discrete logarithm problem
 
 Fix a large prime `p`. The nonzero residues `{1, 2, ..., p-1}` under
@@ -31,7 +55,9 @@ encryption, DSA signatures, and related schemes. This project is about
 attacking DLP faster than the naive/generic approach, as a piece of
 cryptanalysis research.
 
-## Index calculus, briefly
+## The algorithm
+
+### Index calculus, briefly
 
 The classical approach for this problem over prime fields is **index
 calculus**. The idea: instead of attacking `x` directly, first fix a small
@@ -50,7 +76,7 @@ Classical index calculus therefore needs discrete logarithms for the whole
 factor base — `k + 1` of them in total, where `k` is the factor-base size —
 before it can answer the original question.
 
-## The "double" idea
+### The "double" idea
 
 The paper this project implements changes the shape of the computation. Run
 **two** relation-collection processes at once:
@@ -87,6 +113,13 @@ some factor-base logs simply won't exist; the double algorithm still works
 with a non-generator base, since it only ever needs a partial, overlapping
 set of logs.
 
+One real subtlety the paper's own presentation glosses over: `β` has to be
+*invertible* mod `p - 1` for the last step above to mean anything, and
+`p - 1` is always even, so an arbitrary overlapping prime's `β` is not
+guaranteed invertible. This implementation searches the overlap for one that
+is (and only falls back to collecting more relations if none of the current
+overlap qualifies), rather than assuming the first shared prime works.
+
 Two supporting ideas make the "collect relations" step fast enough to be
 practical at all:
 
@@ -100,7 +133,7 @@ practical at all:
   testing thousands of candidates in roughly `O(batch · polylog)` time
   versus `O(batch × |factor base|)`.
 
-## Data representation
+### Implementation notes
 
 - **Fixed-width integers (`u128`, an unsigned 128-bit type):** the values
   that show up on the arithmetic hot path — candidates being smoothness
@@ -128,6 +161,12 @@ practical at all:
   handful of small primes out of a factor base that can have thousands of
   entries. Collections of such rows become the sparse matrix later handed
   to the linear solver.
+- **g-side and b-side run concurrently.** Relation collection is pure
+  GMP/Montgomery arithmetic on disjoint per-side state, so it parallelizes
+  cleanly; the linear solve step (which goes through LinBox) does not
+  parallelize safely and is serialized between the two sides internally —
+  this is an implementation constraint of the underlying linear-algebra
+  library, not part of the algorithm itself.
 
 ## Python interface
 
@@ -138,14 +177,11 @@ of the pipeline they belong to:
 **Number theory primitives**
 - `sieve_to(n)` — primes up to `n`, via a sieve of Eratosthenes.
 - `is_prime(n)` — primality test (deterministic for smaller `n`, probabilistic Miller–Rabin above that).
-- `factorize_naive(n)` — trial-division factorization; returns `(factors, remainder)`, where `remainder` is whatever wasn't factored by small primes alone.
-- `squfof(n)` — Shanks' Square Form Factorization; returns one nontrivial factor of `n`.
 - `factorize(n)` — full factorization of `n`, combining trial division and SQUFOF.
 
 **Smoothness and the Dickman function**
 - `is_smooth(x, y)` — whether `x` is `y`-smooth (all prime factors ≤ `y`).
 - `log_dickman(u)` — `ln(ρ(u))`, the log of Dickman's ρ function, used to estimate how common smooth numbers are.
-- `mp_ln(x)` — natural log of a (possibly very large) integer `x`.
 - `log_mul(x, log_rho)` — computes `x * exp(log_rho)` for large `x`, without losing precision to floating point along the way.
 - `psi_approx(x, y)` — an estimate of `Ψ(x, y)`, the count of `y`-smooth integers up to `x`.
 
@@ -153,6 +189,16 @@ of the pipeline they belong to:
 - `build_product_tree(values)` — builds the product-tree levels over a list of values (typically the factor base).
 - `smooth_candidates(p_levels, X)` — given a product tree and a batch of candidates `X`, returns the indices of the candidates that are smooth over the tree's base set.
 - `tree_factorize(p_levels, d)` — factors a known-smooth `d` over the product tree, returning its sparse `(index, exponent)` relation row.
+
+**The solver**
+- `DLP(p)` — constructs a solver for one prime `p` (builds and owns the
+  factor base, product tree, and `p - 1`'s factorization once, so it can be
+  reused across multiple `solve` calls against the same `p`).
+- `DLP.solve(g, b)` — runs the double index calculus algorithm described
+  above and returns `x` such that `g**x % p == b`. **Both `g` and `b` must
+  be genuine primitive roots mod `p`** (order exactly `p - 1`) — this is not
+  validated internally, and violating it produces silent, persistent
+  failures rather than an error.
 
 A typical exploratory session looks like:
 
@@ -170,7 +216,14 @@ smooth_idx = smooth.smooth_candidates(tree, candidates)   # which candidates are
 smooth.tree_factorize(tree, candidates[smooth_idx[0]])    # its relation row
 ```
 
-The pieces that turn these primitives into an actual end-to-end discrete-log
-solve — generator search, the g-side/b-side relation collectors, the
-overlap-finder, and the final combination step — are still under active
-development and not yet part of the public interface.
+And solving an actual discrete logarithm end to end:
+
+```python
+import smooth
+
+p = 1009
+g, b = 11, 17          # both must be primitive roots mod p
+
+x = smooth.DLP(p).solve(g, b)
+assert pow(g, x, p) == b
+```

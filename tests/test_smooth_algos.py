@@ -53,21 +53,6 @@ def test_log_dickman_is_monotonically_nonincreasing(rng):
         assert smooth.log_dickman(u1) >= smooth.log_dickman(u2) - 1e-9
 
 
-@pytest.mark.parametrize("k", [1, 10, 64, 100, 127])
-def test_mp_ln_known_powers_of_two(k):
-    assert math.isclose(smooth.mp_ln(2**k), k * math.log(2.0), abs_tol=1e-9)
-
-
-def test_mp_ln_randomized_against_python_reference(rng):
-    for _ in range(50):
-        x = random_bitlength(rng, 20 + rng.randrange(100))
-        bit_len = x.bit_length()
-        shift = max(0, bit_len - 53)
-        mantissa = x >> shift
-        expected = math.log(mantissa) + shift * math.log(2.0)
-        assert math.isclose(smooth.mp_ln(x), expected, rel_tol=1e-9)
-
-
 def test_log_mul_identity_at_zero():
     for x in [1, 2, 97, 2**60, 2**100 + 3]:
         assert smooth.log_mul(x, 0.0) == x
@@ -107,7 +92,11 @@ def test_psi_approx_matches_x_times_rho_within_tolerance(rng):
         x = random_bitlength(rng, 40 + rng.randrange(80))
         y = 1000 + rng.randrange(1_000_000)
 
-        u = smooth.mp_ln(x) / math.log(y)
+        # math.log(x) here, not smooth.mp_ln(x) -- mp_ln is no longer exposed
+        # from the pybind layer, and this test isn't about mp_ln anyway, just
+        # needs ln(x) for a large (possibly >64-bit) x, which Python's own
+        # math.log already handles exactly for ints in this size range.
+        u = math.log(x) / math.log(y)
         expected = x * math.exp(smooth.log_dickman(u))
         got = smooth.psi_approx(x, y)
 

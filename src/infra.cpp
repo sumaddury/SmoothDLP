@@ -211,14 +211,13 @@ constexpr int WIEDEMANN_THRESHOLD = 4000;
 
 void addRelations(
     u128 base,
+    size_t target,
     const ProblemParams& params,
     RelationMatrix& M,
     U128Vector& X) {
-  const size_t k = params.p_levels[0].size();
-  size_t added = 0;
 
-  while (added < k) {
-    size_t batch_size = static_cast<size_t>(std::ceil(static_cast<double>(k - added) / params.smooth_density));
+  while (M.size() < target) {
+    size_t batch_size = static_cast<size_t>(std::ceil(static_cast<double>(target - M.size()) / params.smooth_density));
 
     U128Vector batch, t_batch;
     batch.reserve(batch_size);
@@ -237,8 +236,6 @@ void addRelations(
       M.push_back(treeFactorize(params.p_levels, batch[idx]));
       X.push_back(t_batch[idx]);
     }
-
-    added += smooth_x.size();
   }
 }
 
@@ -280,7 +277,7 @@ inline u128 binExp(u128 q, int e) {
   For odd q, Euler's theorem applies directly: phi(q^e) = q^(e-1)*(q-1), and
   P_prev^(phi-1) mod n is P_prev^-1 mod n whenever gcd(P_prev, n) = 1.
 */
-inline u128 modInv(u128 P_prev, u128 q, int e, u128 n) {
+inline u128 modInvPrimePower(u128 P_prev, u128 q, int e, u128 n) {
     if (q != 2) {
         const u128 phi = binExp(q, e - 1) * (q - 1);   // Euler's totient of a prime power
         const u128 n_prime = mont::inverse(n);
@@ -290,6 +287,36 @@ inline u128 modInv(u128 P_prev, u128 q, int e, u128 n) {
     } else {
         return mont::inverse(P_prev) & (((u128)1 << e) - 1);
     }
+}
+
+u128 modInv(u128 x, const FactorList& factorization) {
+    std::vector<std::pair<u128, u128>> factors;
+    factors.reserve(factorization.size());
+
+    for (auto [q, e] : factorization) {
+        if (x % q == 0) return 0;
+        const u128 n = binExp(q, e);
+
+        factors.emplace_back(modInvPrimePower(x, q, e, n), n);
+    }
+
+    u128 C, P;
+    std::tie(C, P) = factors[0];
+
+    for (size_t iter = 1; iter < factorization.size(); ++iter) {
+        auto& [y, n] = factors[iter];
+        auto [q, e] = factorization[iter];
+
+        const u128 P_inv = modInvPrimePower(P, q, e, n);
+        const u128 c_mod_n = C % n;
+        const u128 diff = (y >= c_mod_n) ? (y - c_mod_n) : (y + n - c_mod_n);
+        const u128 t = mont::mulmod_any(diff, P_inv, n);
+
+        C += P * t;
+        P *= n;
+    }
+
+    return C;
 }
 
 U128Vector crtSolve(
@@ -326,7 +353,7 @@ U128Vector crtSolve(
         auto& [L, n] = bases[iter];
         auto [q, e] = params.p_factorization[iter];
 
-        const u128 P_inv = modInv(P, q, e, n);
+        const u128 P_inv = modInvPrimePower(P, q, e, n);
         U128Vector t(L.size());
 
         for (size_t i = 0; i < L.size(); ++i) {
