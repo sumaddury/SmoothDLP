@@ -53,11 +53,6 @@ u128 computeSmoothnessBound(u128 p) {
   return static_cast<u128>(std::ceil(std::exp(ln_B)));
 }
 
-std::vector<MpzVector> productTreeForBound(u128 B) {
-  const std::vector<uint32_t> factor_base = gauss::sieveTo(static_cast<uint32_t>(B));
-  return buildProductTree(MpzVector(factor_base.begin(), factor_base.end()));
-}
-
 // Uniform random value in [0, L] via rejection sampling: draw a full 128-bit
 // value, mask it down to L's bit range (mask is the caller-supplied all-ones
 // bitmask covering [0, L]), and retry on the rare draw that still lands
@@ -208,7 +203,8 @@ ProblemParams::ProblemParams(u128 p) :
   // smooth_density directly, so this needs the actual probability, not
   // its log.
   smooth_density(std::exp(salgo::logDickman(salgo::mp_ln(p) / salgo::mp_ln(B)))),
-  p_levels(productTreeForBound(B)),
+  factor_base(gauss::sieveTo(static_cast<uint32_t>(B))),
+  p_levels(buildProductTree(MpzVector(factor_base.begin(), factor_base.end()))),
   p_factorization(gauss::factorize(p - 1)) {}
 
 constexpr int WIEDEMANN_THRESHOLD = 4000;
@@ -361,6 +357,20 @@ U128Vector crtSolve(
     }
 
     return C;
+}
+
+std::vector<std::pair<uint32_t, u128>> filterDetermined(
+    u128 base,
+    const ProblemParams& params,
+    const U128Vector& L) {
+    std::vector<std::pair<uint32_t, u128>> output;
+
+    for (size_t i = 0; i < L.size(); ++i) {
+        const u128 candidate = mont::powmod_odd(base, L[i], params.p, params.p_prime, params.r2);
+        if (candidate == params.factor_base[i]) output.emplace_back(params.factor_base[i], L[i]);
+    }
+
+    return output;
 }
 
 } // namespace infra

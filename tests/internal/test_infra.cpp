@@ -1,6 +1,6 @@
 // Standalone correctness tests for the complete, headered functions in
 // src/infra.{h,cpp}: buildProductTree, smoothCandidates, treeFactorize,
-// ProblemParams, addRelations, and crtSolve.
+// ProblemParams, addRelations, crtSolve, and filterDetermined.
 //
 // infra.{h,cpp} depends on montgomery.h (smoothCandidates calls mont::pow2mod
 // /mont::gcd) and, since crtSolve calls into lin_alg::henselLift, on LinBox/
@@ -24,6 +24,7 @@
 #include <numeric>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace infra;
@@ -633,6 +634,103 @@ void test_crt_solve_failure_vs_rank_by_relation_multiple() {
     }
 }
 
+// ---- infra::filterDetermined -----------------------------------------------
+//
+// Contract: filterDetermined(base, params, L) returns exactly the (prime,
+// log) pairs from L that verify directly against real modular
+// exponentiation -- base^L[i] mod p == params.factor_base[i] -- without
+// relying on any rank/kernel analysis of how crtSolve arrived at L. This is
+// the paper's Omega_g/Omega_b construction (Algorithm 1's second phase).
+
+// Brute-force base^t mod p for every t in [0, p-2], independent of
+// mont::powmod_odd (which filterDetermined itself calls) -- a real oracle,
+// not a restatement of the implementation under test. Only practical for
+// the small primes used below.
+std::unordered_map<u128, u128> brute_force_discrete_logs(u128 base, u128 p) {
+    std::unordered_map<u128, u128> table;
+    u128 val = 1;
+    for (u128 t = 0; t < p - 1; ++t) {
+        table[val] = t;
+        val = (val * base) % p;
+    }
+    return table;
+}
+
+void test_filter_determined_keeps_only_directly_verified_entries() {
+    // base=11 is a confirmed primitive root mod 1009 (see the crtSolve
+    // tests above); 3k relations is comfortably past the point this
+    // module's own statistics test shows failure rate hits a stable 0%.
+    u128 p = 1009, base = 11;
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
+
+    RelationMatrix M;
+    U128Vector X;
+    while (M.size() < 3 * k) addRelations(base, params, M, X);
+
+    U128Vector C = crtSolve(params, M, X);
+    CHECK(!C.empty());
+
+    const auto oracle = brute_force_discrete_logs(base, p);
+    const auto determined = filterDetermined(base, params, C);
+
+    // At 3k relations for a genuine primitive root, C should already be
+    // fully correct, so nothing should be dropped -- but the real property
+    // under test is that every pair returned is independently verifiable
+    // against the oracle, regardless of how much of C happened to survive.
+    CHECK(!determined.empty());
+    CHECK(determined.size() <= C.size());
+    for (auto& [prime, log] : determined) {
+        auto it = oracle.find(prime);
+        CHECK(it != oracle.end());
+        if (it != oracle.end()) CHECK(it->second == log);
+    }
+}
+
+void test_filter_determined_excludes_a_corrupted_coordinate_and_keeps_the_rest() {
+    // Deterministic, not dependent on ever actually hitting a rank-deficient
+    // crtSolve output: take a real, verified-correct C and corrupt exactly
+    // one coordinate by hand. filterDetermined must drop that one pair and
+    // keep every other -- an inverted or mismatched predicate would get
+    // this backwards (drop everything correct, keep the wrong one), so this
+    // is a direct regression check on that failure mode.
+    u128 p = 1009, base = 11;
+    ProblemParams params(p);
+    const size_t k = params.p_levels[0].size();
+
+    RelationMatrix M;
+    U128Vector X;
+    while (M.size() < 3 * k) addRelations(base, params, M, X);
+
+    U128Vector C = crtSolve(params, M, X);
+    CHECK(!C.empty());
+    CHECK(C.size() >= 2);
+
+    const size_t corrupt_idx = 0;
+    U128Vector C_corrupt = C;
+    C_corrupt[corrupt_idx] = (C_corrupt[corrupt_idx] + 1) % (p - 1); // now genuinely wrong
+
+    const auto determined = filterDetermined(base, params, C_corrupt);
+
+    const uint32_t corrupted_prime = params.factor_base[corrupt_idx];
+    for (auto& [prime, log] : determined) CHECK(prime != corrupted_prime);
+
+    for (size_t i = 1; i < C.size(); ++i) {
+        const uint32_t prime = params.factor_base[i];
+        bool found = false;
+        for (auto& [p2, log] : determined) {
+            if (p2 == prime) { CHECK(log == C[i]); found = true; break; }
+        }
+        CHECK(found);
+    }
+}
+
+void test_filter_determined_on_empty_input_returns_empty() {
+    ProblemParams params(1009);
+    U128Vector empty;
+    CHECK(filterDetermined((u128)11, params, empty).empty());
+}
+
 struct TestCase {
     const char* name;
     void (*fn)();
@@ -659,6 +757,9 @@ int main() {
         {"crt_solve_handles_rectangular_overdetermined", test_crt_solve_handles_rectangular_overdetermined},
         {"crt_solve_on_real_relations_from_add_relations", test_crt_solve_on_real_relations_from_add_relations},
         {"crt_solve_failure_vs_rank_by_relation_multiple", test_crt_solve_failure_vs_rank_by_relation_multiple},
+        {"filter_determined_keeps_only_directly_verified_entries", test_filter_determined_keeps_only_directly_verified_entries},
+        {"filter_determined_excludes_a_corrupted_coordinate_and_keeps_the_rest", test_filter_determined_excludes_a_corrupted_coordinate_and_keeps_the_rest},
+        {"filter_determined_on_empty_input_returns_empty", test_filter_determined_on_empty_input_returns_empty},
     };
 
     for (auto& t : tests) {

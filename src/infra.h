@@ -47,18 +47,24 @@ SparseList treeFactorize(const std::vector<MpzVector>& p_levels, u128 d);
   estimated probability that a random residue mod p is B-smooth (see
   smooth_algos.h's logDickman -- this is the actual probability, not its
   log, since addRelations divides by it directly), used to size relation-
-  collection batches; p_levels is the product tree built over the factor
-  base (buildProductTree) and p_factorization is (p-1)'s factorization, not
-  p's -- it's the group order's prime-power factors that crtSolve's CRT/
-  Hensel decomposition actually runs over -- both computed once here and
-  owned by value: nothing outside ProblemParams holds this data, so a
-  reference member would dangle the instant the constructor returned.
+  collection batches; factor_base is the factor base itself (all primes
+  < B, via gauss::sieveTo) in the same order p_levels' bottom level uses,
+  kept as a plain uint32_t list -- rather than making every caller convert
+  p_levels[0]'s mpz_class entries back -- specifically so filterDetermined
+  (below) can compare it directly against a mont::powmod_odd result;
+  p_levels is the product tree built over it (buildProductTree) and
+  p_factorization is (p-1)'s factorization, not p's -- it's the group
+  order's prime-power factors that crtSolve's CRT/Hensel decomposition
+  actually runs over -- all computed once here and owned by value: nothing
+  outside ProblemParams holds this data, so a reference member would
+  dangle the instant the constructor returned.
 */
 struct ProblemParams {
   const u128 p, p_prime, r2;
   const int mask_bitlength;
   const u128 mask, B;
   const double smooth_density;
+  const std::vector<uint32_t> factor_base;
   const std::vector<MpzVector> p_levels;
   const FactorList p_factorization;
 
@@ -141,5 +147,39 @@ U128Vector crtSolve(
     const ProblemParams& params,
     const RelationMatrix& M,
     const U128Vector& X);
+
+/**
+  Implements the paper's Omega_g / Omega_b construction (Huang et al.,
+  Algorithm 1's second phase, and the definition given in the text above
+  it: "Omega_g = { p-bar in Omega | there exists l in L_g such that
+  g^l === p-bar (mod p) }"). Given a candidate solution L to
+  M*L === X (mod p-1) for base (as produced by crtSolve, so L is indexed
+  1:1 against params.factor_base -- L[i] is a claimed value for
+  log_base(params.factor_base[i])), returns every (prime, log) pair that
+  verifies directly: every i such that
+  base^L[i] mod p == params.factor_base[i]. This is Omega_g (or Omega_b,
+  depending on which base is passed) as a list of pairs rather than a bare
+  set of primes, since the second phase's alpha/beta lookup needs the log
+  itself, not just which primes made it in.
+
+  This is deliberately NOT a rank/kernel analysis of M. crtSolve's own
+  contract already says coordinates outside every CRT factor's kernel come
+  back correct and the rest come back arbitrary -- but an arbitrary
+  coordinate doesn't need to be proven wrong in advance to be caught here:
+  since base is a genuine primitive root (addRelations' precondition),
+  base^l mod p is a bijection on [0, p-2], so a coordinate is correct if
+  and only if it passes this one direct check. Garbage coordinates simply
+  fail it and are omitted from the result.
+
+  PRECONDITION, not checked here: L.size() must equal
+  params.factor_base.size() (true of any direct crtSolve output against
+  this same params), and base must be the same base the M/X that produced
+  L were actually collected with via addRelations -- checking L against a
+  different base's exponentiation isn't a meaningful check of anything.
+*/
+std::vector<std::pair<uint32_t, u128>> filterDetermined(
+    u128 base,
+    const ProblemParams& params,
+    const U128Vector& L);
 
 } // namespace infra
